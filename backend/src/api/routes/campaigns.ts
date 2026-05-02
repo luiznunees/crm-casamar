@@ -1,0 +1,171 @@
+import { Router, Request, Response } from 'express';
+import { z } from 'zod';
+import prisma from '../../prisma/client';
+import {
+  createCampaign,
+  getCampaignById,
+  listCampaigns,
+  enqueueCampaign,
+  getCampaignStats,
+  updateCampaignStatus,
+} from '../../services/campaignService';
+
+const router = Router();
+
+const mediaAttachmentSchema = z.object({
+  type: z.enum(['audio', 'image', 'video', 'document']),
+  base64: z.string().min(10),
+  mimetype: z.string(),
+  caption: z.string().optional(),
+  fileName: z.string().optional(),
+});
+
+const createCampaignSchema = z.object({
+  name: z.string().min(1),
+  targetStages: z.array(z.enum(['COLD', 'WARMING', 'WARM', 'HOT', 'INTERESTED'])).min(1),
+  targetSources: z.array(z.string()),
+  messageTemplate: z.string().min(10),
+  scheduledAt: z.string().datetime().optional(),
+  mediaAttachments: z.array(mediaAttachmentSchema).optional(),
+  sendWindowStart: z.string().regex(/^\d{2}:\d{2}$/).optional(), // "09:00"
+  sendWindowEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),   // "18:00"
+  sendWindowDays: z.array(z.number().min(0).max(6)).optional(),  // [1,2,3,4,5]
+});
+
+// GET /campaigns
+router.get('/', async (_req: Request, res: Response) => {
+  try {
+    const campaigns = await listCampaigns();
+    res.json(campaigns);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao listar campanhas' });
+  }
+});
+
+// GET /campaigns/:id
+router.get('/:id', async (req: Request, res: Response) => {
+  try {
+    const campaign = await getCampaignById(req.params.id);
+    if (!campaign) return res.status(404).json({ error: 'Campanha não encontrada' });
+    res.json(campaign);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao buscar campanha' });
+  }
+});
+
+// GET /campaigns/:id/stats
+router.get('/:id/stats', async (req: Request, res: Response) => {
+  try {
+    const stats = await getCampaignStats(req.params.id);
+    res.json(stats);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao buscar estatísticas da campanha' });
+  }
+});
+
+// POST /campaigns
+router.post('/', async (req: Request, res: Response) => {
+  try {
+    const data = createCampaignSchema.parse(req.body);
+    const campaign = await createCampaign({
+      ...data,
+      scheduledAt: data.scheduledAt ? new Date(data.scheduledAt) : undefined,
+    });
+    res.status(201).json(campaign);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Dados inválidos', details: err.errors });
+    }
+    res.status(500).json({ error: 'Erro ao criar campanha' });
+  }
+});
+
+// POST /campaigns/preview-audience — conta leads que batem com os filtros
+router.post('/preview-audience', async (req: Request, res: Response) => {
+  try {
+    const { targetStages, targetSources, targetTags, targetPreferredContact } = z.object({
+      targetStages: z.array(z.enum(['COLD', 'WARMING', 'WARM', 'HOT', 'INTERESTED'])).optional(),
+      targetSources: z.array(z.string()).optional(),
+      targetTags: z.array(z.string()).optional(),
+      targetPreferredContact: z.array(z.string()).optional(),
+    }).parse(req.body);
+
+    const where: any = {};
+    if (targetStages?.length) where.stage = { in: targetStages };
+    if (targetSources?.length) where.source = { in: targetSources };
+    if (targetTags?.length) where.tags = { hasSome: targetTags };
+    if (targetPreferredContact?.length) where.preferredContact = { in: targetPreferredContact };
+
+    const [count, byStage, bySource] = await Promise.all([
+      prisma.lead.count({ where }),
+      prisma.lead.groupBy({ by: ['stage'], where, _count: { id: true } }),
+      prisma.lead.groupBy({ by: ['source'], where, _count: { id: true } }),
+    ]);
+
+    res.json({
+      total: count,
+      byStage: byStage.reduce((acc, s) => ({ ...acc, [s.stage]: s._count.id }), {}),
+      bySource: bySource.reduce((acc, s) => ({ ...acc, [s.source]: s._count.id }), {}),
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Dados inválidos' });
+    res.status(500).json({ error: 'Erro ao calcular audiência' });
+  }
+});
+
+// POST /campaigns/:id/dispatch
+router.post('/:id/dispatch', async (req: Request, res: Response) => {  try {
+    const result = await enqueueCampaign(req.params.id);
+    res.json({ message: 'Campanha enfileirada com sucesso', ...result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Erro ao disparar campanha';
+    res.status(500).json({ error: message });
+  }
+});
+
+// POST /campaigns/:id/test — envia para até 5 leads de teste
+router.post('/:id/test', async (req: Request, res: Response) => {
+  try {
+    const { testLeadIds } = z.object({
+      testLeadIds: z.array(z.string().uuid()).min(1).max(5),
+    }).parse(req.body);
+
+    const campaign = await getCampaignById(req.params.id);
+    if (!campaign) return res.status(404).json({ error: 'Campanha não encontrada' });
+
+    const { sendCampaignMessageToLead } = await import('../../services/messageService');
+    const results = [];
+
+    for (const leadId of testLeadIds) {
+      const result = await sendCampaignMessageToLead(
+        leadId,
+        campaign.messageTemplate,
+        (campaign as any).mediaAttachments || []
+      );
+      results.push({ leadId, ...result });
+    }
+
+    res.json({
+      message: 'Teste enviado',
+      results,
+      sent: results.filter((r) => r.success).length,
+      failed: results.filter((r) => !r.success).length,
+    });
+  } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Dados inválidos', details: err.errors });
+    const message = err instanceof Error ? err.message : 'Erro ao testar campanha';
+    res.status(500).json({ error: message });
+  }
+});
+
+// PATCH /campaigns/:id/cancel
+router.patch('/:id/cancel', async (req: Request, res: Response) => {
+  try {
+    const campaign = await updateCampaignStatus(req.params.id, 'CANCELLED');
+    res.json(campaign);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao cancelar campanha' });
+  }
+});
+
+export default router;

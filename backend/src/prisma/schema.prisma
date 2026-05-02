@@ -1,0 +1,260 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Stage {
+  COLD
+  WARMING
+  WARM
+  HOT
+  INTERESTED
+}
+
+enum PreferredContact {
+  WHATSAPP
+  AUDIO
+  CALL
+}
+
+enum MessageDirection {
+  SENT
+  RECEIVED
+}
+
+enum MessageType {
+  TEXT
+  AUDIO
+  IMAGE
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  COMPLETED
+  CANCELLED
+}
+
+model Lead {
+  id               String           @id @default(uuid())
+  name             String?
+  phone            String           @unique
+  email            String?
+  source           String           // nome do empreendimento: "Iniciada", "Malibu", "Amari", etc.
+  stage            Stage            @default(COLD)
+  nameCollected    Boolean          @default(false)
+  firstMessageSent Boolean          @default(false)
+  unreadCount      Int              @default(0)   // mensagens recebidas não lidas
+  lastMessageAt    DateTime?                       // timestamp da última mensagem (qualquer direção)
+  assignedNumber   Int              // 1 ou 2 — definido na criação, nunca muda
+  preferredContact PreferredContact @default(WHATSAPP)
+  observations     String?
+  tags             String[]         @default([])
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  messages         Message[]
+  campaignLeads    CampaignLead[]
+  leadFollowUps    LeadFollowUp[]
+  warmingFlow      WarmingFlow?
+
+  @@index([stage])
+  @@index([source])
+  @@index([assignedNumber])
+}
+
+model Message {
+  id         String           @id @default(uuid())
+  leadId     String
+  direction  MessageDirection
+  content    String
+  type       MessageType      @default(TEXT)
+  fromNumber Int?             // 1 ou 2
+  sentAt     DateTime         @default(now())
+
+  lead       Lead             @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@index([sentAt])
+}
+
+model Campaign {
+  id               String         @id @default(uuid())
+  name             String
+  targetStages     Stage[]
+  targetSources    String[]       // listas/empreendimentos
+  targetTags       String[]       @default([]) // filtro por tags
+  targetPreferredContact String[] @default([]) // WHATSAPP | AUDIO | CALL
+  messageTemplate  String
+  scheduledAt      DateTime?
+  status           CampaignStatus @default(DRAFT)
+  mediaAttachments Json[]         @default([])
+  sendWindowStart  String?
+  sendWindowEnd    String?
+  sendWindowDays   Int[]          @default([])
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  campaignLeads    CampaignLead[]
+}
+
+// Configurações globais de geração de mensagens pela IA
+// Existe sempre um único registro (singleton, id = "default")
+model AIConfig {
+  id                String   @id @default("default")
+  personaName       String   @default("Consultora")
+  personaRole       String   @default("consultora imobiliária")
+  companyName       String   @default("Imobiliária")
+  globalRules       String   @default("")
+  toneInstructions  String   @default("")
+  forbiddenWords    String[] @default([])
+  mustInclude       String[] @default([])
+  maxLength         Int      @default(300)
+  signatureTemplate String   @default("")
+  // Mensagens em blocos separados
+  splitMessages     Boolean  @default(true)   // envia como múltiplas mensagens
+  blockDelaySeconds Int      @default(3)      // delay em segundos entre cada bloco
+  updatedAt         DateTime @updatedAt
+}
+
+model CampaignLead {
+  id              String    @id @default(uuid())
+  campaignId      String
+  leadId          String
+  sentAt          DateTime?
+  status          String    @default("PENDING") // PENDING | AWAITING_APPROVAL | APPROVED | SENT | FAILED | SKIPPED | REJECTED
+  generatedMessage String?  // mensagem gerada pela IA, aguardando aprovação
+  finalMessage     String?  // mensagem final (editada ou igual à gerada)
+
+  campaign   Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  lead       Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, leadId])
+  @@index([campaignId])
+  @@index([leadId])
+  @@index([status])
+}
+
+// ── Follow-up ────────────────────────────────────────────────────────────────
+
+enum FollowUpStatus {
+  ACTIVE    // sequência rodando para este lead
+  PAUSED    // pausado manualmente
+  COMPLETED // todos os passos enviados
+  STOPPED   // lead respondeu — sequência parou
+}
+
+// Sequência de follow-up: conjunto de passos ordenados
+model FollowUpSequence {
+  id           String   @id @default(uuid())
+  name         String
+  description  String   @default("")
+  targetStages Stage[]  // stages que entram automaticamente nesta sequência
+  targetSources String[] @default([]) // empreendimentos alvo (vazio = todos)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  steps        FollowUpStep[]
+  leadFollowUps LeadFollowUp[]
+}
+
+// Passo individual da sequência
+model FollowUpStep {
+  id              String   @id @default(uuid())
+  sequenceId      String
+  order           Int      // 1, 2, 3...
+  delayDays       Int      // dias após o passo anterior (ou após criação do lead para o passo 1)
+  messageTemplate String   // instrução para a IA gerar a mensagem
+  mediaAttachments Json[]  @default([]) // mídias opcionais
+
+  sequence        FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  executions      LeadFollowUpExecution[]
+
+  @@index([sequenceId, order])
+}
+
+// Rastreia o estado de cada lead em cada sequência
+model LeadFollowUp {
+  id           String         @id @default(uuid())
+  leadId       String
+  sequenceId   String
+  currentStep  Int            @default(1)
+  status       FollowUpStatus @default(ACTIVE)
+  startedAt    DateTime       @default(now())
+  nextSendAt   DateTime       // quando enviar o próximo passo
+  stoppedAt    DateTime?      // quando parou (respondeu ou completou)
+
+  lead         Lead             @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  sequence     FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  executions   LeadFollowUpExecution[]
+
+  @@unique([leadId, sequenceId])
+  @@index([status, nextSendAt])
+  @@index([leadId])
+}
+
+// Histórico de cada envio de follow-up
+model LeadFollowUpExecution {
+  id           String   @id @default(uuid())
+  leadFollowUpId String
+  stepId       String
+  sentAt       DateTime @default(now())
+  status       String   @default("SENT") // SENT | FAILED | SKIPPED
+  message      String   @default("")     // mensagem gerada
+
+  leadFollowUp LeadFollowUp @relation(fields: [leadFollowUpId], references: [id], onDelete: Cascade)
+  step         FollowUpStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@index([leadFollowUpId])
+}
+
+// ── Quick Reply Templates ─────────────────────────────────────────────────────
+model QuickReply {
+  id        String   @id @default(uuid())
+  title     String   // nome curto ex: "Confirmar visita"
+  content   String   // texto da mensagem
+  category  String   @default("geral")
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+// ── Auto-reply config (fora do horário) ──────────────────────────────────────
+// Singleton id = "default"
+model AutoReplyConfig {
+  id          String   @id @default("default")
+  enabled     Boolean  @default(false)
+  startHour   Int      @default(22) // hora de início (22 = 22:00)
+  endHour     Int      @default(8)  // hora de fim (8 = 08:00)
+  message     String   @default("Oi {nome}! Recebi sua mensagem e vou te responder assim que possível. 😊")
+  updatedAt   DateTime @updatedAt
+}
+
+// ── Lead Lists (listas de importação) ────────────────────────────────────────
+model LeadList {
+  id          String   @id @default(uuid())
+  name        String   // ex: "Feira do Imóvel Março"
+  description String   @default("")
+  color       String   @default("#6366f1") // cor para identificação visual
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ── Warming Flow ──────────────────────────────────────────────────────────────
+// Controla o estado do fluxo de aquecimento de leads sem nome
+model WarmingFlow {
+  id          String   @id @default(uuid())
+  leadId      String   @unique
+  step        Int      @default(1)  // 1=perguntou nome, 2=perguntou opt-in
+  active      Boolean  @default(true)
+  optOut      Boolean  @default(false) // lead disse não quer receber
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+}
