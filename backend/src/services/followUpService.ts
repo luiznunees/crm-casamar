@@ -328,21 +328,24 @@ export async function getPendingFollowUps(daysSinceLastMessage = 2) {
 
 export async function getFollowUpStats() {
   try {
-    const rows = await prisma.$queryRawUnsafe<Array<{ status: string; count: string }>>(`
-      SELECT "status", COUNT(*) as count FROM "LeadFollowUp" GROUP BY "status"
-    `);
-    const map = rows.reduce((acc, r) => ({ ...acc, [r.status]: Number(r.count) }), {} as Record<string, number>);
+    const rows = await prisma.leadFollowUp.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+    });
+    const map = rows.reduce((acc, r) => ({ ...acc, [r.status]: r._count._all }), {} as Record<string, number>);
 
-    const pendingRows = await prisma.$queryRawUnsafe<Array<{ count: string }>>(`
-      SELECT COUNT(*) as count FROM "LeadFollowUp"
-      WHERE "status" = 'ACTIVE' AND "nextSendAt" <= NOW()
-    `);
+    const pendingCount = await prisma.leadFollowUp.count({
+      where: {
+        status: 'ACTIVE',
+        nextSendAt: { lte: new Date() },
+      },
+    });
 
     return {
       active: map['ACTIVE'] || 0,
       completed: map['COMPLETED'] || 0,
       stopped: map['STOPPED'] || 0,
-      pendingNow: Number(pendingRows[0]?.count || 0),
+      pendingNow: pendingCount,
     };
   } catch (_) {
     return { active: 0, completed: 0, stopped: 0, pendingNow: 0 };

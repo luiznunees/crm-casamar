@@ -6,6 +6,31 @@ export const api = axios.create({
   timeout: 300_000, // 5 minutos para uploads grandes
 });
 
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token && config.headers) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      window.location.href = '/login';
+    } else if (error.response?.status === 500) {
+      // Exibe toast genérico, se houvesse uma biblioteca de toast global.
+      console.error('Erro interno no servidor (500)');
+      // Despacha um evento global que pode ser ouvido pelo componente App
+      window.dispatchEvent(new CustomEvent('api-error-500'));
+    }
+    return Promise.reject(error);
+  }
+);
+
 // Types
 export type Stage = 'COLD' | 'WARMING' | 'WARM' | 'HOT' | 'INTERESTED';
 export type PreferredContact = 'WHATSAPP' | 'AUDIO' | 'CALL';
@@ -68,7 +93,9 @@ export interface Campaign {
 
 export interface MediaAttachment {
   type: 'audio' | 'image' | 'video' | 'document';
-  base64: string;
+  /** @deprecated Utilize mediaUrl em vez de base64 */
+  base64?: string;
+  mediaUrl?: string;
   mimetype: string;
   caption?: string;
   fileName?: string;
@@ -166,6 +193,19 @@ export const inboxApi = {
   suggest: (leadId: string) => api.post<{ suggestion: string }>(`/inbox/${leadId}/suggest`),
   sendMedia: (leadId: string, attachment: MediaAttachment) =>
     api.post<Message>(`/inbox/${leadId}/media`, attachment),
+};
+
+// ── Upload API ────────────────────────────────────────────────────────────────
+
+export const uploadApi = {
+  uploadMedia: async (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await api.post<{ url: string }>('/upload', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data;
+  },
 };
 
 // ── Follow-up API ─────────────────────────────────────────────────────────────

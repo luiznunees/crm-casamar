@@ -6,6 +6,8 @@ import { campaignsApi, campaignTestApi, leadsApi, type Stage, type CampaignStatu
 import { STAGE_LABELS, CAMPAIGN_STATUS_LABELS } from '../constants';
 import { StageBadge } from '../components/StageBadge';
 import { usePollingInterval } from '../hooks/usePageVisible';
+import CampaignProgress from '../components/CampaignProgress';
+
 
 const LEAD_STATUS_COLORS: Record<string, string> = {
   PENDING: '#94a3b8', SENT: '#22c55e', FAILED: '#ef4444', SKIPPED: '#f59e0b',
@@ -125,31 +127,13 @@ export default function CampaignDetail() {
             </div>
           </div>
 
-          {/* Progresso */}
-          <div className="card">
-            <h3 style={{ fontWeight: 600, marginBottom: 16 }}>Progresso {campaign.status === 'RUNNING' && <span style={{ fontSize: 11, color: 'var(--success)', marginLeft: 6 }}>● ao vivo</span>}</h3>
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 13 }}>
-                <span style={{ color: 'var(--text-muted)' }}>Progresso</span>
-                <span style={{ fontWeight: 600 }}>{progress}%</span>
-              </div>
-              <div style={{ background: 'var(--bg)', borderRadius: 4, height: 8 }}>
-                <div style={{ background: progress === 100 ? 'var(--success)' : 'var(--primary)', width: `${progress}%`, height: '100%', borderRadius: 4, transition: 'width 0.5s' }} />
-              </div>
-            </div>
-            {[
-              { label: 'Total', value: totalLeads, color: 'var(--text)' },
-              { label: 'Enviados', value: sent, color: 'var(--success)' },
-              { label: 'Pendentes', value: pending, color: 'var(--text-muted)' },
-              { label: 'Falhas', value: failed, color: 'var(--danger)' },
-              { label: 'Pulados', value: skipped, color: 'var(--warning)' },
-            ].map(({ label, value, color }) => (
-              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
-                <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>{label}</span>
-                <span style={{ fontWeight: 600, color }}>{value}</span>
-              </div>
-            ))}
-          </div>
+          {/* Progresso em Tempo Real */}
+          <CampaignProgress 
+            campaignId={id!} 
+            initialStatus={campaign.status as CampaignStatus}
+            totalLeads={totalLeads}
+          />
+
         </div>
 
         {/* Leads */}

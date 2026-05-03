@@ -8,9 +8,9 @@ const router = Router();
 // GET /tags
 router.get('/', async (_req: Request, res: Response) => {
   try {
-    const tags = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT * FROM "Tag" ORDER BY "name" ASC`
-    );
+    const tags = await prisma.tag.findMany({
+      orderBy: { name: 'asc' },
+    });
     res.json(tags);
   } catch {
     res.status(500).json({ error: 'Erro ao listar tags' });
@@ -27,11 +27,14 @@ router.post('/', async (req: Request, res: Response) => {
     }).parse(req.body);
 
     const id = randomUUID();
-    await prisma.$executeRawUnsafe(
-      `INSERT INTO "Tag" ("id","name","color","description","createdAt") VALUES ($1,$2,$3,$4,NOW())`,
-      id, name.toLowerCase().trim(), color, description
-    );
-    const [tag] = await prisma.$queryRawUnsafe<any[]>(`SELECT * FROM "Tag" WHERE id=$1`, id);
+    const tag = await prisma.tag.create({
+      data: {
+        id,
+        name: name.toLowerCase().trim(),
+        color,
+        description,
+      },
+    });
     res.status(201).json(tag);
   } catch (err: any) {
     if (err?.code === 'P2002' || String(err).includes('unique')) {
@@ -51,23 +54,20 @@ router.patch('/:id', async (req: Request, res: Response) => {
       description: z.string().optional(),
     }).parse(req.body);
 
-    const sets: string[] = [];
-    const vals: any[] = [];
-    let i = 1;
-    if (name !== undefined) { sets.push(`"name"=$${i++}`); vals.push(name.toLowerCase().trim()); }
-    if (color !== undefined) { sets.push(`"color"=$${i++}`); vals.push(color); }
-    if (description !== undefined) { sets.push(`"description"=$${i++}`); vals.push(description); }
-    if (sets.length === 0) return res.status(400).json({ error: 'Nada para atualizar' });
+    const updateData: any = {};
+    if (name !== undefined) updateData.name = name.toLowerCase().trim();
+    if (color !== undefined) updateData.color = color;
+    if (description !== undefined) updateData.description = description;
 
-    vals.push(req.params.id);
-    await prisma.$executeRawUnsafe(
-      `UPDATE "Tag" SET ${sets.join(',')} WHERE id=$${i}`,
-      ...vals
-    );
-    const [tag] = await prisma.$queryRawUnsafe<any[]>(`SELECT * FROM "Tag" WHERE id=$1`, req.params.id);
-    if (!tag) return res.status(404).json({ error: 'Tag não encontrada' });
+    if (Object.keys(updateData).length === 0) return res.status(400).json({ error: 'Nada para atualizar' });
+
+    const tag = await prisma.tag.update({
+      where: { id: req.params.id },
+      data: updateData,
+    });
     res.json(tag);
-  } catch (err) {
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Tag não encontrada' });
     if (err instanceof z.ZodError) return res.status(400).json({ error: 'Dados inválidos' });
     res.status(500).json({ error: 'Erro ao atualizar tag' });
   }
@@ -76,7 +76,9 @@ router.patch('/:id', async (req: Request, res: Response) => {
 // DELETE /tags/:id
 router.delete('/:id', async (req: Request, res: Response) => {
   try {
-    await prisma.$executeRawUnsafe(`DELETE FROM "Tag" WHERE id=$1`, req.params.id);
+    await prisma.tag.delete({
+      where: { id: req.params.id },
+    });
     res.status(204).send();
   } catch {
     res.status(500).json({ error: 'Erro ao deletar tag' });

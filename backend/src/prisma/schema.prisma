@@ -144,7 +144,9 @@ model CampaignLead {
   leadId          String
   sentAt          DateTime?
   status          String    @default("PENDING") // PENDING | AWAITING_APPROVAL | APPROVED | SENT | FAILED | SKIPPED | REJECTED
+  currentStepId   String?   // ID do nó no Campaign Builder visual (Heatmap)
   generatedMessage String?  // mensagem gerada pela IA, aguardando aprovação
+
   finalMessage     String?  // mensagem final (editada ou igual à gerada)
 
   campaign   Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
@@ -284,3 +286,22 @@ model WarmingFlow {
 
   lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
 }
+
+// ── Auth / Users ─────────────────────────────────────────────────────────────
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// ── Campaign Templates (Campaign Builder Visual) ───────────────────────────────
+model CampaignTemplate {
+  id        String   @id @default(cuid())
+  name      String
+  nodes     Json     @default("[]")  // CampaignNode[]
+  edges     Json     @default("[]")  // CampaignEdge[]
+  createdAt DateTime @default(now())
+}
+

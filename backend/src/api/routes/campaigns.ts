@@ -9,8 +9,10 @@ import {
   getCampaignStats,
   updateCampaignStatus,
 } from '../../services/campaignService';
+import { log } from '../../utils/logger';
 
 const router = Router();
+
 
 const mediaAttachmentSchema = z.object({
   type: z.enum(['audio', 'image', 'video', 'document']),
@@ -114,6 +116,116 @@ router.post('/', async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Erro ao criar campanha' });
   }
 });
+
+// PUT /campaigns/:id — atualiza nodes, edges, filtro e nome
+router.put('/:id', async (req: Request, res: Response) => {
+  try {
+    const schema = z.object({
+      name: z.string().min(1).optional(),
+      nodes: z.array(z.any()).optional(),
+      edges: z.array(z.any()).optional(),
+      targetFilter: z.record(z.any()).optional(),
+      status: z.enum(['DRAFT','SCHEDULED','RUNNING','COMPLETED','CANCELLED']).optional(),
+    });
+    const data = schema.parse(req.body);
+    const campaign = await prisma.campaign.update({
+      where: { id: req.params.id },
+      data: {
+        ...(data.name && { name: data.name }),
+        ...(data.nodes !== undefined && { steps: data.nodes as any }),
+        ...(data.status && { status: data.status }),
+        updatedAt: new Date(),
+      },
+    });
+    res.json(campaign);
+  } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Dados inválidos', details: err.errors });
+    res.status(500).json({ error: 'Erro ao atualizar campanha' });
+  }
+});
+
+// DELETE /campaigns/:id
+router.delete('/:id', async (req: Request, res: Response) => {
+  try {
+    await prisma.campaign.delete({ where: { id: req.params.id } });
+    res.status(204).send();
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao deletar campanha' });
+  }
+});
+
+// GET /campaigns/:id/status — SSE com progresso de disparo em tempo real
+router.get('/:id/status', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const heartbeat = setInterval(() => res.write(': heartbeat\n\n'), 15_000);
+
+  const sendStatus = async () => {
+    try {
+      const [campaign, totalSent, totalPending, totalFailed, nodeGroups] = await Promise.all([
+        prisma.campaign.findUnique({ where: { id }, select: { status: true, name: true } }),
+        prisma.campaignLead.count({ where: { campaignId: id, status: 'SENT' } }),
+        prisma.campaignLead.count({ where: { campaignId: id, status: 'PENDING' } }),
+        prisma.campaignLead.count({ where: { campaignId: id, status: 'FAILED' } }),
+        prisma.campaignLead.groupBy({
+          by: ['currentStepId'],
+          where: { campaignId: id, currentStepId: { not: null } },
+          _count: { _all: true },
+        }),
+      ]);
+
+      if (!campaign) {
+        res.write('event: error\ndata: {"error":"Campanha n\u00e3o encontrada"}\n\n');
+        clearInterval(heartbeat);
+        clearInterval(poll);
+        res.end();
+        return;
+      }
+
+      const nodeStats = nodeGroups.reduce((acc, g) => ({
+        ...acc,
+        [g.currentStepId as string]: g._count._all,
+      }), {});
+
+      const payload = { 
+        status: campaign.status, 
+        totalSent, 
+        totalPending, 
+        totalFailed, 
+        nodeStats, // Item 4: Heatmap
+        ts: Date.now() 
+      };
+
+      res.write(`event: status\ndata: ${JSON.stringify(payload)}\n\n`);
+
+      if (campaign.status === 'COMPLETED' || campaign.status === 'CANCELLED') {
+        clearInterval(heartbeat);
+        clearInterval(poll);
+        res.end();
+        log.campaign(`[SSE] Campanha ${id} finalizada (${campaign.status})`);
+      }
+    } catch (err) {
+      log.error('[SSE] Erro ao consultar status da campanha', err);
+    }
+  };
+
+  // Envia imediatamente e depois a cada 3s
+  sendStatus();
+  const poll = setInterval(sendStatus, 3000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    clearInterval(poll);
+    log.ok(`[SSE] Cliente desconectou do status da campanha ${id}`);
+  });
+});
+
 
 // POST /campaigns/preview-audience — conta leads que batem com os filtros
 router.post('/preview-audience', async (req: Request, res: Response) => {

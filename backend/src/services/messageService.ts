@@ -48,6 +48,39 @@ export async function getMessagesByLead(leadId: string, limit = 50) {
   });
 }
 
+/**
+ * Recalcula o engagementScore de um lead contando as mensagens recebidas diretamente
+ * no banco — evita dessincronias causadas por incrementos parciais.
+ */
+export async function recalculateEngagementScore(leadId: string): Promise<number> {
+  const count = await prisma.message.count({
+    where: { leadId, direction: 'RECEIVED' },
+  });
+
+  await prisma.lead.update({
+    where: { id: leadId },
+    data: { engagementScore: count },
+  });
+
+  return count;
+}
+
+/**
+ * Recalcula o engagementScore para todos os leads do banco.
+ * Chamado pelo endpoint admin GET /api/admin/recalculate-scores.
+ */
+export async function recalculateAllEngagementScores(): Promise<{ updated: number }> {
+  const leads = await prisma.lead.findMany({ select: { id: true } });
+
+  for (const lead of leads) {
+    await recalculateEngagementScore(lead.id);
+  }
+
+  log.ok(`[admin] engagementScore recalculado para ${leads.length} leads`);
+  return { updated: leads.length };
+}
+
+
 // ── Helpers de envio ──────────────────────────────────────────────────────────
 
 function sleep(ms: number) {
@@ -94,7 +127,9 @@ async function sendBlocks(
 
 export interface MediaAttachment {
   type: 'audio' | 'image' | 'video' | 'document';
-  base64: string;
+  /** @deprecated Utilize mediaUrl em vez de base64 */
+  base64?: string;
+  mediaUrl?: string;
   mimetype: string;
   caption?: string;
   fileName?: string;

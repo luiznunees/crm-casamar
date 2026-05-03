@@ -1,11 +1,62 @@
 import Groq from 'groq-sdk';
 import { Lead, Message } from '@prisma/client';
 import { getAIConfig } from '../services/aiConfigService';
+import { config } from '../config';
+import { log } from '../utils/logger';
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const groq = new Groq({ apiKey: config.groqApiKey });
 const MODEL = 'llama-3.3-70b-versatile';
 
 type LeadWithMessages = Lead & { messages?: Message[] };
+
+// ── Retry helper ─────────────────────────────────────────────────────────────
+
+/** Erros recuperáveis da Groq (rate limit, serviço indisponível). */
+const RECOVERABLE_STATUS = new Set([429, 503, 502]);
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Executa uma chamada à Groq com retry exponencial.
+ * - Tenta até 3 vezes com delays de 1s, 2s e 4s.
+ * - Distingue erros recuperáveis (429, 503) de permanentes (400, 401).
+ * - Em caso de falha permanente, lança imediatamente sem retry.
+ */
+async function withRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
+  const maxAttempts = 3;
+  const delays = [1000, 2000, 4000];
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err: unknown) {
+      const status = (err as any)?.status ?? (err as any)?.statusCode ?? 0;
+      const isRecoverable = RECOVERABLE_STATUS.has(status) || status === 0; // 0 = network error
+
+      if (!isRecoverable) {
+        // Erro permanente (ex: 400 bad request, 401 unauthorized) — falha imediata
+        log.error(`[groq] ${context} → erro permanente (${status})`, err);
+        throw err;
+      }
+
+      if (attempt === maxAttempts) {
+        log.error(`[groq] ${context} → esgotou ${maxAttempts} tentativas (último status: ${status})`, err);
+        throw err;
+      }
+
+      const delay = delays[attempt - 1];
+      log.warn(`[groq] ${context} → tentativa ${attempt}/${maxAttempts} falhou (${status}). Retry em ${delay}ms…`);
+      await sleep(delay);
+    }
+  }
+
+  // TypeScript — nunca alcançado
+  throw new Error('Retry loop exited unexpectedly');
+}
+
+// ── Parsers ───────────────────────────────────────────────────────────────────
 
 /**
  * Separa a resposta da IA em blocos individuais.
@@ -18,15 +69,24 @@ export function parseMessageBlocks(raw: string): string[] {
     .filter((b) => b.length > 0);
 }
 
+// ── Capitalize helper ─────────────────────────────────────────────────────────
+
+function capitalize(str: string): string {
+  if (!str) return str;
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
+
+// ── Fluxo 1: Coleta de nome ───────────────────────────────────────────────────
+
 /**
- * Fluxo 1: Mensagem de coleta de nome (lead COLD sem nome).
+ * Mensagem de coleta de nome (lead COLD sem nome).
  * Retorna array de blocos — normalmente 1 bloco só.
  */
 export async function generateNameRequestMessage(lead: LeadWithMessages): Promise<string[]> {
-  const config = await getAIConfig();
+  const aiConfig = await getAIConfig();
   const seed = Date.now();
 
-  const systemPrompt = `Você é ${config.personaName}, ${config.personaRole} da ${config.companyName}.
+  const systemPrompt = `Você é ${aiConfig.personaName}, ${aiConfig.personaRole} da ${aiConfig.companyName}.
 Sua tarefa ÚNICA: apresentar-se brevemente e perguntar o nome da pessoa.
 
 REGRAS:
@@ -34,49 +94,47 @@ REGRAS:
 - Mensagem curta (2-3 linhas)
 - Tom casual, como WhatsApp
 - Termine com pergunta pelo nome
-${config.toneInstructions ? `\nTOM: ${config.toneInstructions}` : ''}
-${config.forbiddenWords?.length ? `\nPALAVRAS PROIBIDAS: ${config.forbiddenWords.join(', ')}` : ''}
+${aiConfig.toneInstructions ? `\nTOM: ${aiConfig.toneInstructions}` : ''}
+${aiConfig.forbiddenWords?.length ? `\nPALAVRAS PROIBIDAS: ${aiConfig.forbiddenWords.join(', ')}` : ''}
 
 Seed: ${seed}
 Responda APENAS com o texto da mensagem, sem aspas.`;
 
-  const completion = await groq.chat.completions.create({
-    model: MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `Novo contato do empreendimento "${lead.source}". Seed: ${seed}` },
-    ],
-    temperature: 1.0,
-    max_tokens: 200,
-  });
+  const raw = await withRetry(async () => {
+    const completion = await groq.chat.completions.create({
+      model: MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `Novo contato do empreendimento "${lead.source}". Seed: ${seed}` },
+      ],
+      temperature: 1.0,
+      max_tokens: 200,
+    });
+    const text = completion.choices[0]?.message?.content?.trim();
+    if (!text) throw new Error('Groq retornou resposta vazia');
+    return text;
+  }, `generateNameRequestMessage(${lead.id})`);
 
-  const raw = completion.choices[0]?.message?.content?.trim();
-  if (!raw) throw new Error('Groq retornou resposta vazia');
   return parseMessageBlocks(raw);
 }
 
+// ── Fluxo 2: Mensagem de campanha ─────────────────────────────────────────────
+
 /**
- * Fluxo 2: Mensagem de campanha.
- * Você escreve a mensagem base — a IA reescreve com variação de palavras
- * para cada lead (anti-fingerprint), mantendo o mesmo significado e tamanho.
+ * Reescreve uma mensagem de campanha com variação por lead (anti-fingerprint).
+ * Mantém o mesmo significado e tamanho da mensagem original.
  */
 export async function generateCampaignMessage(
   lead: LeadWithMessages,
   campaignTemplate: string
 ): Promise<string[]> {
   const hasName = !!(lead.name && lead.nameCollected);
-  const firstName = hasName
-    ? capitalize(lead.name!.split(' ')[0])
-    : null;
+  const firstName = hasName ? capitalize(lead.name!.split(' ')[0]) : null;
 
-function capitalize(str: string): string {
-  if (!str) return str;
-  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
-}
-  const config = await getAIConfig();
+  const aiConfig = await getAIConfig();
   const seed = Date.now();
 
-  const blocksInstruction = config.splitMessages
+  const blocksInstruction = aiConfig.splitMessages
     ? `FORMATO DE SAÍDA — OBRIGATÓRIO:
 Separe cada frase/ideia com "---" em linha isolada.
 Exemplo do formato correto:
@@ -114,27 +172,32 @@ O QUE VOCÊ NÃO PODE FAZER:
 - Errar gramática — "Aqui é o Luis Jr" ✅, "Estou Luis Jr" ❌, "Sou Luis Jr" ✅
 - Usar o nome completo — use apenas o primeiro nome: "${firstName || 'nome'}"
 - Usar construções estranhas em português
-${config.forbiddenWords?.length ? `- Usar: ${config.forbiddenWords.join(', ')}` : ''}
+${aiConfig.forbiddenWords?.length ? `- Usar: ${aiConfig.forbiddenWords.join(', ')}` : ''}
 
 ${blocksInstruction}
 
 Seed de variação: ${seed} — cada lead recebe uma versão diferente.
 Responda APENAS com a mensagem reescrita, em português correto.`;
 
-  const completion = await groq.chat.completions.create({
-    model: MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: campaignTemplate },
-    ],
-    temperature: 0.7, // variação suficiente sem comprometer a gramática
-    max_tokens: 300,
-  });
+  const raw = await withRetry(async () => {
+    const completion = await groq.chat.completions.create({
+      model: MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: campaignTemplate },
+      ],
+      temperature: 0.7,
+      max_tokens: 300,
+    });
+    const text = completion.choices[0]?.message?.content?.trim();
+    if (!text) throw new Error('Groq retornou resposta vazia');
+    return text;
+  }, `generateCampaignMessage(${lead.id})`);
 
-  const raw = completion.choices[0]?.message?.content?.trim();
-  if (!raw) throw new Error('Groq retornou resposta vazia');
   return parseMessageBlocks(raw);
 }
+
+// ── Preview / teste ───────────────────────────────────────────────────────────
 
 /**
  * Preview/teste — retorna blocos sem enviar.
@@ -143,7 +206,7 @@ export async function generatePreviewMessage(
   template: string,
   mockLead?: { name?: string; source?: string; stage?: string }
 ): Promise<{ blocks: string[]; raw: string }> {
-  const config = await getAIConfig();
+  const aiConfig = await getAIConfig();
   const seed = Date.now();
 
   const name = mockLead?.name || 'João';
@@ -151,20 +214,20 @@ export async function generatePreviewMessage(
   const stage = mockLead?.stage || 'WARM';
 
   const configuredRules: string[] = [];
-  if (config.globalRules) configuredRules.push(`REGRAS OBRIGATÓRIAS:\n${config.globalRules}`);
-  if (config.toneInstructions) configuredRules.push(`TOM E ESTILO:\n${config.toneInstructions}`);
-  if (config.mustInclude?.length) configuredRules.push(`ELEMENTOS OBRIGATÓRIOS:\n- ${config.mustInclude.join('\n- ')}`);
-  if (config.forbiddenWords?.length) configuredRules.push(`PALAVRAS PROIBIDAS: ${config.forbiddenWords.join(', ')}`);
+  if (aiConfig.globalRules) configuredRules.push(`REGRAS OBRIGATÓRIAS:\n${aiConfig.globalRules}`);
+  if (aiConfig.toneInstructions) configuredRules.push(`TOM E ESTILO:\n${aiConfig.toneInstructions}`);
+  if (aiConfig.mustInclude?.length) configuredRules.push(`ELEMENTOS OBRIGATÓRIOS:\n- ${aiConfig.mustInclude.join('\n- ')}`);
+  if (aiConfig.forbiddenWords?.length) configuredRules.push(`PALAVRAS PROIBIDAS: ${aiConfig.forbiddenWords.join(', ')}`);
 
-  const blocksInstruction = config.splitMessages
+  const blocksInstruction = aiConfig.splitMessages
     ? `FORMATO — MENSAGENS EM BLOCOS separados por "---":
 BLOCO 1: Saudação curta (1 linha)
 BLOCO 2: Contexto / gancho (1-2 linhas)
-BLOCO 3: CTA ou próximo passo (1-2 linhas)${config.signatureTemplate ? `\nBLOCO 4: Assinatura: "${config.signatureTemplate}"` : ''}
+BLOCO 3: CTA ou próximo passo (1-2 linhas)${aiConfig.signatureTemplate ? `\nBLOCO 4: Assinatura: "${aiConfig.signatureTemplate}"` : ''}
 Use "---" em linha separada entre cada bloco.`
-    : `Mensagem em bloco único.${config.signatureTemplate ? ` Assinatura ao final: "${config.signatureTemplate}"` : ''}`;
+    : `Mensagem em bloco único.${aiConfig.signatureTemplate ? ` Assinatura ao final: "${aiConfig.signatureTemplate}"` : ''}`;
 
-  const systemPrompt = `Você é ${config.personaName}, ${config.personaRole} da ${config.companyName}.
+  const systemPrompt = `Você é ${aiConfig.personaName}, ${aiConfig.personaRole} da ${aiConfig.companyName}.
 
 LEAD DE TESTE: Nome: ${name} | Empreendimento: ${source} | Stage: ${stage}
 
@@ -177,49 +240,48 @@ ${blocksInstruction}
 REGRAS: Comece com "Oi ${name}" ou "Olá ${name}". Tom natural de WhatsApp. Seed: ${seed}
 Responda APENAS com o texto.`;
 
-  const completion = await groq.chat.completions.create({
-    model: MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `Preview para ${name}. Seed: ${seed}` },
-    ],
-    temperature: 1.0,
-    max_tokens: Math.ceil((config.maxLength || 300) * 2),
-  });
+  const raw = await withRetry(async () => {
+    const completion = await groq.chat.completions.create({
+      model: MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `Preview para ${name}. Seed: ${seed}` },
+      ],
+      temperature: 1.0,
+      max_tokens: Math.ceil((aiConfig.maxLength || 300) * 2),
+    });
+    const text = completion.choices[0]?.message?.content?.trim();
+    if (!text) throw new Error('Groq retornou resposta vazia');
+    return text;
+  }, `generatePreviewMessage`);
 
-  const raw = completion.choices[0]?.message?.content?.trim();
-  if (!raw) throw new Error('Groq retornou resposta vazia');
-  const blocks = parseMessageBlocks(raw);
-  return { blocks, raw };
+  return { blocks: parseMessageBlocks(raw), raw };
 }
+
+// ── Sugestão de resposta (inbox) ──────────────────────────────────────────────
 
 /**
  * Gera uma sugestão de resposta para o inbox.
  * Lê o histórico da conversa e sugere a próxima mensagem.
- * O usuário pode editar antes de enviar.
  */
-export async function generateSuggestedReply(
-  lead: LeadWithMessages
-): Promise<string> {
-  const config = await getAIConfig();
+export async function generateSuggestedReply(lead: LeadWithMessages): Promise<string> {
+  const aiConfig = await getAIConfig();
   const seed = Date.now();
 
-  // Histórico ordenado do mais antigo para o mais recente
   const history = (lead.messages || [])
     .sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime())
-    .slice(-12) // últimas 12 mensagens
+    .slice(-12)
     .map((m) => {
-      const who = m.direction === 'SENT' ? `${config.personaName}` : (lead.name || 'Lead');
+      const who = m.direction === 'SENT' ? `${aiConfig.personaName}` : (lead.name || 'Lead');
       return `${who}: ${m.content}`;
     })
     .join('\n');
 
-  // Última mensagem recebida
   const lastReceived = (lead.messages || [])
     .filter((m) => m.direction === 'RECEIVED')
     .sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime())[0];
 
-  const systemPrompt = `Você é ${config.personaName}, ${config.personaRole} da ${config.companyName}.
+  const systemPrompt = `Você é ${aiConfig.personaName}, ${aiConfig.personaRole} da ${aiConfig.companyName}.
 
 CONTEXTO DO LEAD:
 - Nome: ${lead.name || 'Desconhecido'}
@@ -230,9 +292,9 @@ ${lead.observations ? `- Observações: ${lead.observations}` : ''}
 HISTÓRICO DA CONVERSA:
 ${history || 'Nenhuma mensagem ainda.'}
 
-${config.globalRules ? `REGRAS:\n${config.globalRules}` : ''}
-${config.toneInstructions ? `TOM: ${config.toneInstructions}` : ''}
-${config.forbiddenWords?.length ? `PALAVRAS PROIBIDAS: ${config.forbiddenWords.join(', ')}` : ''}
+${aiConfig.globalRules ? `REGRAS:\n${aiConfig.globalRules}` : ''}
+${aiConfig.toneInstructions ? `TOM: ${aiConfig.toneInstructions}` : ''}
+${aiConfig.forbiddenWords?.length ? `PALAVRAS PROIBIDAS: ${aiConfig.forbiddenWords.join(', ')}` : ''}
 
 SUA TAREFA:
 Gere UMA sugestão de resposta para a última mensagem recebida${lastReceived ? ` ("${lastReceived.content}")` : ''}.
@@ -247,17 +309,18 @@ REGRAS DA SUGESTÃO:
 
 Responda APENAS com o texto da sugestão.`;
 
-  const completion = await groq.chat.completions.create({
-    model: MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `Sugira uma resposta. Seed: ${seed}` },
-    ],
-    temperature: 0.9,
-    max_tokens: 200,
-  });
-
-  const suggestion = completion.choices[0]?.message?.content?.trim();
-  if (!suggestion) throw new Error('Groq retornou sugestão vazia');
-  return suggestion;
+  return await withRetry(async () => {
+    const completion = await groq.chat.completions.create({
+      model: MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `Sugira uma resposta. Seed: ${seed}` },
+      ],
+      temperature: 0.9,
+      max_tokens: 200,
+    });
+    const suggestion = completion.choices[0]?.message?.content?.trim();
+    if (!suggestion) throw new Error('Groq retornou sugestão vazia');
+    return suggestion;
+  }, `generateSuggestedReply(${lead.id})`);
 }

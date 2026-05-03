@@ -72,9 +72,13 @@ router.get('/stats', async (_req: Request, res: Response) => {
 // GET /leads/origins — lista todas as origens distintas no banco
 router.get('/origins', async (_req: Request, res: Response) => {
   try {
-    const rows = await (await import('../../prisma/client')).default.$queryRawUnsafe<{ origin: string }[]>(
-      `SELECT DISTINCT origin FROM "Lead" WHERE origin IS NOT NULL AND origin != '' ORDER BY origin ASC`
-    );
+    const prisma = (await import('../../prisma/client')).default;
+    const rows = await prisma.lead.findMany({
+      where: { origin: { not: '' } },
+      distinct: ['origin'],
+      select: { origin: true },
+      orderBy: { origin: 'asc' },
+    });
     res.json(rows.map(r => r.origin));
   } catch (err) {
     res.status(500).json({ error: 'Erro ao buscar origens' });

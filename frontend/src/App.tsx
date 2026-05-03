@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { Routes, Route, NavLink } from 'react-router-dom';
 import { Users, Megaphone, BarChart3, Settings, MessageSquare, RefreshCw, LayoutGrid, Upload } from 'lucide-react';
+
 import { useQuery } from '@tanstack/react-query';
 import Dashboard from './pages/Dashboard';
 import Leads from './pages/Leads';
@@ -13,6 +14,8 @@ import FollowUp from './pages/FollowUp';
 import Kanban from './pages/Kanban';
 import SettingsPage from './pages/Settings';
 import ImportPage from './pages/Import';
+import CampaignBuilder from './pages/CampaignBuilder';
+
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { inboxApi, followUpApi, type Lead } from './api/client';
 import { usePollingInterval } from './hooks/usePageVisible';
@@ -66,71 +69,100 @@ const InboxNavItem = memo(function InboxNavItem() {
   );
 });
 
+import LoginPage from './pages/Login';
+
 export default function App() {
+  const token = localStorage.getItem('token');
+  const isAuth = !!token;
+
   return (
-    <div className="app-layout">
-      <nav className="sidebar">
-        <div className="sidebar-logo">
-          <span className="logo-icon">🏢</span>
-          <span className="logo-text">CRM Imob</span>
-        </div>
-        <ul className="nav-list">
-          <li>
-            <NavLink to="/" end className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
-              <BarChart3 size={18} /><span>Dashboard</span>
-            </NavLink>
-          </li>
-          <li>
-            <NavLink to="/leads" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
-              <Users size={18} /><span>Leads</span>
-            </NavLink>
-          </li>
-          <li>
-            <NavLink to="/import" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
-              <Upload size={18} /><span>Importar</span>
-            </NavLink>
-          </li>
-          <li>
-            <NavLink to="/kanban" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
-              <LayoutGrid size={18} /><span>Kanban</span>
-            </NavLink>
-          </li>
-          <li><InboxNavItem /></li>
-          <li>
-            <NavLink to="/campaigns" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
-              <Megaphone size={18} /><span>Campanhas</span>
-            </NavLink>
-          </li>
-          <li><FollowUpNavItem /></li>
-          <li>
-            <NavLink to="/settings" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
-              <Settings size={18} /><span>Config. IA</span>
-            </NavLink>
-          </li>
-          <li>
-            <NavLink to="/config" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
-              <Settings size={18} /><span>Configurações</span>
-            </NavLink>
-          </li>
-        </ul>
-      </nav>
-      <main className="main-content">
-        <ErrorBoundary>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/leads" element={<Leads />} />
-            <Route path="/leads/:id" element={<LeadDetail />} />
-            <Route path="/inbox" element={<Inbox />} />
-            <Route path="/campaigns" element={<Campaigns />} />
-            <Route path="/campaigns/:id" element={<CampaignDetail />} />
-            <Route path="/follow-up" element={<FollowUp />} />
-            <Route path="/kanban" element={<Kanban />} />
-            <Route path="/import" element={<ImportPage />} />
-            <Route path="/settings" element={<AISettings />} />
-            <Route path="/config" element={<SettingsPage />} />
-          </Routes>
-        </ErrorBoundary>
-      </main>
-    </div>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route
+        path="*"
+        element={
+          isAuth ? (
+            <div className="app-layout">
+              <nav className="sidebar">
+                <div className="sidebar-logo">
+                  <span className="logo-icon">🏢</span>
+                  <span className="logo-text">CRM Imob</span>
+                </div>
+                <ul className="nav-list">
+                  <li>
+                    <NavLink to="/" end className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
+                      <BarChart3 size={18} /><span>Dashboard</span>
+                    </NavLink>
+                  </li>
+                  <li>
+                    <NavLink to="/leads" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
+                      <Users size={18} /><span>Leads</span>
+                    </NavLink>
+                  </li>
+                  <li>
+                    <NavLink to="/import" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
+                      <Upload size={18} /><span>Importar</span>
+                    </NavLink>
+                  </li>
+                  <li>
+                    <NavLink to="/kanban" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
+                      <LayoutGrid size={18} /><span>Kanban</span>
+                    </NavLink>
+                  </li>
+                  <li><InboxNavItem /></li>
+                  <li>
+                    <NavLink to="/campaigns" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
+                      <Megaphone size={18} /><span>Campanhas</span>
+                    </NavLink>
+                  </li>
+                  <li><FollowUpNavItem /></li>
+                  <li>
+                    <NavLink to="/settings" className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}>
+                      <Settings size={18} /><span>Configurações</span>
+                    </NavLink>
+                  </li>
+                </ul>
+                <div style={{ marginTop: 'auto', padding: '20px' }}>
+                  <button 
+                    className="btn btn-ghost" 
+                    style={{ width: '100%', justifyContent: 'flex-start', color: '#f87171' }}
+                    onClick={() => {
+                      localStorage.removeItem('token');
+                      localStorage.removeItem('user');
+                      window.location.href = '/login';
+                    }}
+                  >
+                    Sair
+                  </button>
+                </div>
+              </nav>
+              <main className="main-content">
+                <ErrorBoundary>
+                  <Routes>
+                    <Route path="/" element={<Dashboard />} />
+                    <Route path="/leads" element={<Leads />} />
+                    <Route path="/leads/:id" element={<LeadDetail />} />
+                    <Route path="/inbox" element={<Inbox />} />
+                    <Route path="/campanhas/nova" element={<CampaignBuilder />} />
+                    <Route path="/campanhas/:id/editar" element={<CampaignBuilder />} />
+                    <Route path="/campaigns" element={<Campaigns />} />
+                    <Route path="/campaigns/:id" element={<CampaignDetail />} />
+                    <Route path="/follow-up" element={<FollowUp />} />
+                    <Route path="/kanban" element={<Kanban />} />
+                    <Route path="/import" element={<ImportPage />} />
+                    <Route path="/settings" element={<AISettings />} />
+                    <Route path="/settings/general" element={<SettingsPage />} />
+                    <Route path="/config" element={<SettingsPage />} />
+                  </Routes>
+                </ErrorBoundary>
+              </main>
+            </div>
+          ) : (
+            <LoginPage />
+          )
+        }
+      />
+    </Routes>
   );
 }
+

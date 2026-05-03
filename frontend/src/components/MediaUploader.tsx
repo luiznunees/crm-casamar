@@ -30,6 +30,8 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
 }
 
+import { uploadApi } from '../api/client';
+
 export function MediaUploader({ attachments, onChange, maxFiles = 5 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
@@ -40,33 +42,30 @@ export function MediaUploader({ attachments, onChange, maxFiles = 5 }: Props) {
 
     const newAttachments: MediaAttachment[] = [];
 
-    for (const file of Array.from(files)) {
-      if (attachments.length + newAttachments.length >= maxFiles) break;
+    try {
+      for (const file of Array.from(files)) {
+        if (attachments.length + newAttachments.length >= maxFiles) break;
 
-      // Converte para base64
-      const base64 = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          // Remove o prefixo "data:mimetype;base64,"
-          resolve(result.split(',')[1]);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
+        // Faz o upload real do arquivo para o S3 via backend
+        const { url } = await uploadApi.uploadMedia(file);
 
-      newAttachments.push({
-        type: getMediaType(file.type),
-        base64,
-        mimetype: file.type,
-        caption: '',
-        fileName: file.name,
-      });
+        newAttachments.push({
+          type: getMediaType(file.type),
+          mediaUrl: url,
+          mimetype: file.type,
+          caption: '',
+          fileName: file.name,
+        });
+      }
+      onChange([...attachments, ...newAttachments]);
+    } catch (err) {
+      console.error('Erro ao fazer upload:', err);
+      // Evento global para ser tratado pelo App/Toast
+      window.dispatchEvent(new CustomEvent('api-error-500'));
+    } finally {
+      setLoading(false);
+      if (inputRef.current) inputRef.current.value = '';
     }
-
-    onChange([...attachments, ...newAttachments]);
-    setLoading(false);
-    if (inputRef.current) inputRef.current.value = '';
   };
 
   const remove = (index: number) => {

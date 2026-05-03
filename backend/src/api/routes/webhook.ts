@@ -3,11 +3,14 @@ import { processIncomingMessage } from '../../services/messageService';
 import { MessageType } from '@prisma/client';
 import prisma from '../../prisma/client';
 import { log } from '../../utils/logger';
+import { inboxEvents } from './inbox';
+import { config } from '../../config';
 
 const router = Router();
 
-const INSTANCE_1 = process.env.EVOLUTION_INSTANCE_1 || 'imobiliaria-numero1';
-const INSTANCE_2 = process.env.EVOLUTION_INSTANCE_2 || 'imobiliaria-numero2';
+const INSTANCE_1 = config.evolutionInstance1;
+const INSTANCE_2 = config.evolutionInstance2;
+
 
 function getInstanceNumber(instanceName: string): number {
   if (instanceName === INSTANCE_1) return 1;
@@ -182,6 +185,12 @@ router.post('/evolution', async (req: Request, res: Response) => {
         content: extracted.content,
         type: extracted.type,
         instanceNumber,
+      });
+
+      // Notifica clientes SSE do Inbox em tempo real
+      inboxEvents.emit('inbox', {
+        type: 'new_message',
+        data: { phone, content: extracted.content, type: extracted.type, instanceNumber, ts: Date.now() },
       });
     }
 

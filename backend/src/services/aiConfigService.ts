@@ -58,22 +58,21 @@ const DEFAULT_CONFIG: AIConfigData = {
 
 export async function getAIConfig(): Promise<AIConfigData> {
   try {
-    const rows = await prisma.$queryRawUnsafe<AIConfigData[]>(
-      `SELECT * FROM "AIConfig" WHERE id = 'default' LIMIT 1`
-    );
-    if (rows.length === 0) return DEFAULT_CONFIG;
+    const config = await prisma.aIConfig.findUnique({
+      where: { id: 'default' },
+    });
+    if (!config) return DEFAULT_CONFIG;
 
-    const row = rows[0];
     return {
       ...DEFAULT_CONFIG,
-      ...row,
-      forbiddenWords: Array.isArray(row.forbiddenWords) ? row.forbiddenWords : [],
-      mustInclude: Array.isArray(row.mustInclude) ? row.mustInclude : [],
-      splitMessages: row.splitMessages ?? true,
-      blockDelaySeconds: row.blockDelaySeconds ?? 3,
-      dailyLimitPerChip: row.dailyLimitPerChip ?? 300,
-      minDelaySeconds: row.minDelaySeconds ?? 20,
-      maxDelaySeconds: row.maxDelaySeconds ?? 60,
+      ...config,
+      forbiddenWords: Array.isArray(config.forbiddenWords) ? config.forbiddenWords : [],
+      mustInclude: Array.isArray(config.mustInclude) ? config.mustInclude : [],
+      splitMessages: config.splitMessages ?? true,
+      blockDelaySeconds: config.blockDelaySeconds ?? 3,
+      dailyLimitPerChip: config.dailyLimitPerChip ?? 300,
+      minDelaySeconds: config.minDelaySeconds ?? 20,
+      maxDelaySeconds: config.maxDelaySeconds ?? 60,
     };
   } catch (err) {
     console.warn('[AIConfig] Erro ao ler config, usando padrão:', (err as Error).message);
@@ -85,53 +84,42 @@ export async function updateAIConfig(data: AIConfigInput): Promise<AIConfigData>
   const current = await getAIConfig();
   const merged = { ...current, ...data };
 
-  const forbiddenArr = `ARRAY[${(merged.forbiddenWords || []).map((w) => `'${w.replace(/'/g, "''")}'`).join(',')}]::TEXT[]`;
-  const mustArr = `ARRAY[${(merged.mustInclude || []).map((w) => `'${w.replace(/'/g, "''")}'`).join(',')}]::TEXT[]`;
-
-  await prisma.$executeRawUnsafe(`
-    INSERT INTO "AIConfig" (
-      "id", "personaName", "personaRole", "companyName",
-      "globalRules", "toneInstructions",
-      "forbiddenWords", "mustInclude",
-      "maxLength", "signatureTemplate",
-      "splitMessages", "blockDelaySeconds",
-      "dailyLimitPerChip", "minDelaySeconds", "maxDelaySeconds",
-      "updatedAt"
-    ) VALUES (
-      'default',
-      '${esc(merged.personaName)}',
-      '${esc(merged.personaRole)}',
-      '${esc(merged.companyName)}',
-      '${esc(merged.globalRules)}',
-      '${esc(merged.toneInstructions)}',
-      ${forbiddenArr},
-      ${mustArr},
-      ${merged.maxLength},
-      '${esc(merged.signatureTemplate)}',
-      ${merged.splitMessages},
-      ${merged.blockDelaySeconds},
-      ${merged.dailyLimitPerChip},
-      ${merged.minDelaySeconds},
-      ${merged.maxDelaySeconds},
-      NOW()
-    )
-    ON CONFLICT ("id") DO UPDATE SET
-      "personaName"       = EXCLUDED."personaName",
-      "personaRole"       = EXCLUDED."personaRole",
-      "companyName"       = EXCLUDED."companyName",
-      "globalRules"       = EXCLUDED."globalRules",
-      "toneInstructions"  = EXCLUDED."toneInstructions",
-      "forbiddenWords"    = EXCLUDED."forbiddenWords",
-      "mustInclude"       = EXCLUDED."mustInclude",
-      "maxLength"         = EXCLUDED."maxLength",
-      "signatureTemplate" = EXCLUDED."signatureTemplate",
-      "splitMessages"     = EXCLUDED."splitMessages",
-      "blockDelaySeconds" = EXCLUDED."blockDelaySeconds",
-      "dailyLimitPerChip" = EXCLUDED."dailyLimitPerChip",
-      "minDelaySeconds"   = EXCLUDED."minDelaySeconds",
-      "maxDelaySeconds"   = EXCLUDED."maxDelaySeconds",
-      "updatedAt"         = NOW();
-  `);
+  await prisma.aIConfig.upsert({
+    where: { id: 'default' },
+    update: {
+      personaName: merged.personaName,
+      personaRole: merged.personaRole,
+      companyName: merged.companyName,
+      globalRules: merged.globalRules,
+      toneInstructions: merged.toneInstructions,
+      forbiddenWords: merged.forbiddenWords,
+      mustInclude: merged.mustInclude,
+      maxLength: merged.maxLength,
+      signatureTemplate: merged.signatureTemplate,
+      splitMessages: merged.splitMessages,
+      blockDelaySeconds: merged.blockDelaySeconds,
+      dailyLimitPerChip: merged.dailyLimitPerChip,
+      minDelaySeconds: merged.minDelaySeconds,
+      maxDelaySeconds: merged.maxDelaySeconds,
+    },
+    create: {
+      id: 'default',
+      personaName: merged.personaName,
+      personaRole: merged.personaRole,
+      companyName: merged.companyName,
+      globalRules: merged.globalRules,
+      toneInstructions: merged.toneInstructions,
+      forbiddenWords: merged.forbiddenWords,
+      mustInclude: merged.mustInclude,
+      maxLength: merged.maxLength,
+      signatureTemplate: merged.signatureTemplate,
+      splitMessages: merged.splitMessages,
+      blockDelaySeconds: merged.blockDelaySeconds,
+      dailyLimitPerChip: merged.dailyLimitPerChip,
+      minDelaySeconds: merged.minDelaySeconds,
+      maxDelaySeconds: merged.maxDelaySeconds,
+    },
+  });
 
   return getAIConfig();
 }

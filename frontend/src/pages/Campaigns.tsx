@@ -313,8 +313,11 @@ export default function Campaigns() {
     <div>
       <div className="page-header">
         <h1 className="page-title">Campanhas</h1>
-        <button className="btn btn-primary" onClick={() => setShowCreate(true)}><Plus size={16} /> Nova Campanha</button>
+        <button className="btn btn-primary" onClick={() => navigate('/campanhas/nova')}>
+          <Plus size={16} /> Nova Campanha
+        </button>
       </div>
+
 
       {isLoading ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -369,7 +372,8 @@ export default function Campaigns() {
         </div>
       )}
 
-      {showCreate && <CreateCampaignModal onClose={() => setShowCreate(false)} allSources={allSources} allOrigins={allOrigins} />}
+
     </div>
   );
 }
+

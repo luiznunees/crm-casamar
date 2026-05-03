@@ -1,7 +1,7 @@
 import prisma from '../prisma/client';
 import Groq from 'groq-sdk';
 import { Lead } from '@prisma/client';
-import { sendTextMessage, sendTyping } from '../whatsapp/evolutionApi';
+import { sendTextMessage, sendTyping, sendPollMessage, sendListMessage } from '../whatsapp/evolutionApi';
 import { saveMessage } from './messageService';
 import { getAIConfig } from './aiConfigService';
 import { log } from '../utils/logger';

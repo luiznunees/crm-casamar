@@ -84,7 +84,7 @@ export function startCampaignWorker() {
 
       throw new Error(`Job desconhecido: ${name}`);
     },
-    { connection: redisConnection, concurrency: 1 }
+    { connection: redisConnection, concurrency: 3 }
   );
 
   worker.on('completed', (job) =>

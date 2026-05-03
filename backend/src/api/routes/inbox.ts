@@ -8,8 +8,55 @@ import {
 } from '../../whatsapp/evolutionApi';
 import { saveMessage } from '../../services/messageService';
 import { log } from '../../utils/logger';
+import { EventEmitter } from 'events';
 
 const router = Router();
+
+// ── SSE EventEmitter (singleton global) ──────────────────────────────────────
+// Outros módulos importam e emitem eventos aqui ao receber mensagens via webhook.
+export const inboxEvents = new EventEmitter();
+inboxEvents.setMaxListeners(100); // suporta até 100 clientes simultâneos
+
+export type InboxEventType = 'new_message' | 'update_conversation';
+export interface InboxEvent {
+  type: InboxEventType;
+  data: Record<string, unknown>;
+}
+
+/**
+ * GET /inbox/stream
+ * Server-Sent Events — emite eventos em tempo real quando chegam novas mensagens.
+ * O cliente reconecta automaticamente (comportamento nativo do EventSource).
+ */
+router.get('/stream', (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // desativa buffer do nginx
+  res.flushHeaders();
+
+  // Heartbeat a cada 30s para manter a conexão viva
+  const heartbeat = setInterval(() => {
+    res.write(': heartbeat\n\n');
+  }, 30_000);
+
+  const onEvent = (event: InboxEvent) => {
+    res.write(`event: ${event.type}\n`);
+    res.write(`data: ${JSON.stringify(event.data)}\n\n`);
+  };
+
+  inboxEvents.on('inbox', onEvent);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    inboxEvents.off('inbox', onEvent);
+    log.ok('[SSE] Cliente inbox desconectado');
+  });
+
+  log.ok('[SSE] Cliente inbox conectado');
+});
+
+
 
 /**
  * GET /inbox

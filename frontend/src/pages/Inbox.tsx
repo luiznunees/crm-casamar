@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Search, Send, ExternalLink, RefreshCw, Sparkles, Paperclip, Zap } from 'lucide-react';
-import { inboxApi, settingsApi, type Lead, type Message, type Stage, type MediaAttachment, type QuickReply } from '../api/client';
+import { inboxApi, settingsApi, uploadApi, type Lead, type Message, type Stage, type MediaAttachment, type QuickReply } from '../api/client';
 import { STAGE_LABELS, CHIP_COLORS } from '../constants';
 import { StageBadge } from '../components/StageBadge';
 import { ConversationSkeleton } from '../components/Skeleton';
@@ -463,16 +463,16 @@ export default function Inbox() {
                     if (!files) return;
                     const newAtts: MediaAttachment[] = [];
                     for (const file of Array.from(files)) {
-                      const base64 = await new Promise<string>((resolve) => {
-                        const reader = new FileReader();
-                        reader.onload = () => resolve((reader.result as string).split(',')[1]);
-                        reader.readAsDataURL(file);
-                      });
-                      const type = file.type.startsWith('audio/') ? 'audio'
-                        : file.type.startsWith('image/') ? 'image'
-                        : file.type.startsWith('video/') ? 'video'
-                        : 'document';
-                      newAtts.push({ type, base64, mimetype: file.type, caption: '', fileName: file.name });
+                      try {
+                        const { url } = await uploadApi.uploadMedia(file);
+                        const type = file.type.startsWith('audio/') ? 'audio'
+                          : file.type.startsWith('image/') ? 'image'
+                          : file.type.startsWith('video/') ? 'video'
+                          : 'document';
+                        newAtts.push({ type, mediaUrl: url, mimetype: file.type, caption: '', fileName: file.name });
+                      } catch (err) {
+                        console.error('Erro no upload:', err);
+                      }
                     }
                     setMediaAttachments((prev) => [...prev, ...newAtts]);
                   };

@@ -14,10 +14,19 @@ export interface AutoReplyConfigData {
 
 export async function getAutoReplyConfig(): Promise<AutoReplyConfigData> {
   try {
-    const rows = await prisma.$queryRawUnsafe<AutoReplyConfigData[]>(
-      `SELECT * FROM "AutoReplyConfig" WHERE id = 'default' LIMIT 1`
-    );
-    return rows[0] ?? {
+    const config = await prisma.autoReplyConfig.findUnique({
+      where: { id: 'default' }
+    });
+    if (config) {
+      return {
+        id: config.id,
+        enabled: config.enabled,
+        startHour: config.startHour,
+        endHour: config.endHour,
+        message: config.message,
+      };
+    }
+    return {
       id: 'default', enabled: false, startHour: 22, endHour: 8,
       message: 'Oi {nome}! Recebi sua mensagem e vou te responder assim que possível. 😊',
     };
@@ -29,16 +38,24 @@ export async function getAutoReplyConfig(): Promise<AutoReplyConfigData> {
 export async function updateAutoReplyConfig(data: Partial<AutoReplyConfigData>) {
   const current = await getAutoReplyConfig();
   const merged = { ...current, ...data };
-  await prisma.$executeRawUnsafe(`
-    INSERT INTO "AutoReplyConfig" ("id", "enabled", "startHour", "endHour", "message", "updatedAt")
-    VALUES ('default', ${merged.enabled}, ${merged.startHour}, ${merged.endHour}, '${merged.message.replace(/'/g, "''")}', NOW())
-    ON CONFLICT ("id") DO UPDATE SET
-      "enabled"   = EXCLUDED."enabled",
-      "startHour" = EXCLUDED."startHour",
-      "endHour"   = EXCLUDED."endHour",
-      "message"   = EXCLUDED."message",
-      "updatedAt" = NOW();
-  `);
+  
+  await prisma.autoReplyConfig.upsert({
+    where: { id: 'default' },
+    update: {
+      enabled: merged.enabled,
+      startHour: merged.startHour,
+      endHour: merged.endHour,
+      message: merged.message,
+    },
+    create: {
+      id: 'default',
+      enabled: merged.enabled,
+      startHour: merged.startHour,
+      endHour: merged.endHour,
+      message: merged.message,
+    }
+  });
+  
   return getAutoReplyConfig();
 }
 

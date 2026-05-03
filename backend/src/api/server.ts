@@ -12,6 +12,15 @@ import settingsRouter from './routes/settings';
 import importRouter from './routes/import';
 import warmingFlowRouter from './routes/warmingFlow';
 import tagsRouter from './routes/tags';
+import uploadRouter from './routes/upload';
+import authRouter from './routes/auth';
+import adminRouter from './routes/admin';
+import campaignTemplatesRouter from './routes/campaignTemplates';
+import aiRouter from './routes/ai';
+import { authMiddleware } from '../middleware/auth';
+
+
+
 export function createApp() {
   const app = express();
 
@@ -35,7 +44,16 @@ export function createApp() {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // API routes
+  // Rotas públicas
+  app.use('/api/auth', authRouter);
+  
+  // Webhook (sem prefixo /api e público)
+  app.use('/webhook', webhookRouter);
+
+  // Aplica auth middleware nas rotas de API privadas
+  app.use('/api', authMiddleware);
+
+  // Rotas privadas
   app.use('/api/leads', leadsRouter);
   app.use('/api/campaigns', campaignsRouter);
   app.use('/api/messages', messagesRouter);
@@ -47,9 +65,12 @@ export function createApp() {
   app.use('/api/import', importRouter);
   app.use('/api/warming-flow', warmingFlowRouter);
   app.use('/api/tags', tagsRouter);
+  app.use('/api/upload', uploadRouter);
+  app.use('/api/admin', adminRouter);
+  app.use('/api/campaign-templates', campaignTemplatesRouter);
+  app.use('/api/ai', aiRouter);
 
-  // Webhook (sem prefixo /api para facilitar configuração na Evolution API)
-  app.use('/webhook', webhookRouter);
+
 
   // 404 handler
   app.use((_req, res) => {
