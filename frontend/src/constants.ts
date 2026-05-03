@@ -26,6 +26,20 @@ export const CAMPAIGN_STATUS_LABELS: Record<CampaignStatus, string> = {
 
 export const SOURCES = ['Iniciada', 'Malibu', 'Amari', 'Outro'];
 
+export const DEFAULT_ORIGINS = [
+  'Tráfego Pago',
+  'Site',
+  'Corretor',
+  'Orgânico',
+];
+
+export const ORIGIN_COLORS: Record<string, string> = {
+  'Tráfego Pago': '#f59e0b',
+  'Site':         '#6366f1',
+  'Corretor':     '#10b981',
+  'Orgânico':     '#60a5fa',
+};
+
 export const CHIP_COLORS: Record<number, string> = {
   1: '#6366f1',
   2: '#f59e0b',

@@ -11,7 +11,7 @@ import followUpRouter from './routes/followUp';
 import settingsRouter from './routes/settings';
 import importRouter from './routes/import';
 import warmingFlowRouter from './routes/warmingFlow';
-
+import tagsRouter from './routes/tags';
 export function createApp() {
   const app = express();
 
@@ -46,6 +46,7 @@ export function createApp() {
   app.use('/api/settings', settingsRouter);
   app.use('/api/import', importRouter);
   app.use('/api/warming-flow', warmingFlowRouter);
+  app.use('/api/tags', tagsRouter);
 
   // Webhook (sem prefixo /api para facilitar configuração na Evolution API)
   app.use('/webhook', webhookRouter);

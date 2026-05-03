@@ -2,38 +2,48 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Play, X } from 'lucide-react';
-import { campaignsApi, type Campaign, type Stage, type CampaignStatus, type MediaAttachment } from '../api/client';
-import { STAGE_LABELS, CAMPAIGN_STATUS_LABELS } from '../constants';
+import { campaignsApi, tagsApi, type Campaign, type Stage, type CampaignStatus, type MediaAttachment, type Tag } from '../api/client';
+import { STAGE_LABELS, CAMPAIGN_STATUS_LABELS, ORIGIN_COLORS } from '../constants';
 import { StageBadge } from '../components/StageBadge';
-import { MediaUploader } from '../components/MediaUploader';
+import { StepEditor, type CampaignStep } from '../components/StepEditor';
 import { useAllSources } from '../hooks/useAllSources';
+import { useAllOrigins } from '../hooks/useAllOrigins';
 
-function CreateCampaignModal({ onClose }: { onClose: () => void }) {
+function CreateCampaignModal({ onClose, allSources, allOrigins }: { onClose: () => void; allSources: string[]; allOrigins: string[] }) {
   const qc = useQueryClient();
-  const allSources = useAllSources();
   const [form, setForm] = useState({
     name: '', targetStages: [] as Stage[], targetSources: [] as string[],
-    targetTags: [] as string[], targetPreferredContact: [] as string[],
-    messageTemplate: '', scheduledAt: '',
+    targetOrigins: [] as string[],
+    targetTags: [] as string[], targetTagsMatchAll: false,
+    targetPreferredContact: [] as string[],
+    scheduledAt: '',
     sendWindowStart: '', sendWindowEnd: '',
     sendWindowDays: [] as number[],
   });
+  const [steps, setSteps] = useState<CampaignStep[]>([]);
   const [mediaAttachments, setMediaAttachments] = useState<MediaAttachment[]>([]);
   const [error, setError] = useState('');
-  const [newTag, setNewTag] = useState('');
   const [audience, setAudience] = useState<{ total: number; byStage: Record<string, number>; bySource: Record<string, number> } | null>(null);
   const [audienceLoading, setAudienceLoading] = useState(false);
+
+  const { data: allTags = [] } = useQuery({
+    queryKey: ['tags'],
+    queryFn: () => tagsApi.list().then(r => r.data),
+    staleTime: 60_000,
+  });
 
   const mutation = useMutation({
     mutationFn: () => campaignsApi.create({
       ...form,
+      steps: steps as any,
       scheduledAt: form.scheduledAt || undefined,
       sendWindowStart: form.sendWindowStart || undefined,
       sendWindowEnd: form.sendWindowEnd || undefined,
       sendWindowDays: form.sendWindowDays.length > 0 ? form.sendWindowDays : undefined,
+      targetOrigins: form.targetOrigins.length > 0 ? form.targetOrigins : undefined,
       targetTags: form.targetTags.length > 0 ? form.targetTags : undefined,
+      targetTagsMatchAll: form.targetTagsMatchAll,
       targetPreferredContact: form.targetPreferredContact.length > 0 ? form.targetPreferredContact : undefined,
-      mediaAttachments,
     } as any),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['campaigns'] }); onClose(); },
     onError: (err: any) => setError(err?.response?.data?.error || 'Erro ao criar campanha'),
@@ -43,16 +53,14 @@ function CreateCampaignModal({ onClose }: { onClose: () => void }) {
     setForm((f) => ({ ...f, targetStages: f.targetStages.includes(stage) ? f.targetStages.filter((s) => s !== stage) : [...f.targetStages, stage] }));
   const toggleSource = (source: string) =>
     setForm((f) => ({ ...f, targetSources: f.targetSources.includes(source) ? f.targetSources.filter((s) => s !== source) : [...f.targetSources, source] }));
+  const toggleOrigin = (origin: string) =>
+    setForm((f) => ({ ...f, targetOrigins: f.targetOrigins.includes(origin) ? f.targetOrigins.filter((o) => o !== origin) : [...f.targetOrigins, origin] }));
+  const toggleTag = (tag: string) =>
+    setForm((f) => ({ ...f, targetTags: f.targetTags.includes(tag) ? f.targetTags.filter((t) => t !== tag) : [...f.targetTags, tag] }));
   const toggleContact = (c: string) =>
     setForm((f) => ({ ...f, targetPreferredContact: f.targetPreferredContact.includes(c) ? f.targetPreferredContact.filter((x) => x !== c) : [...f.targetPreferredContact, c] }));
   const toggleDay = (day: number) =>
     setForm((f) => ({ ...f, sendWindowDays: f.sendWindowDays.includes(day) ? f.sendWindowDays.filter((d) => d !== day) : [...f.sendWindowDays, day] }));
-  const addTag = () => {
-    const t = newTag.trim();
-    if (t && !form.targetTags.includes(t)) setForm((f) => ({ ...f, targetTags: [...f.targetTags, t] }));
-    setNewTag('');
-  };
-  const removeTag = (t: string) => setForm((f) => ({ ...f, targetTags: f.targetTags.filter((x) => x !== t) }));
 
   const previewAudience = async () => {
     setAudienceLoading(true);
@@ -132,21 +140,74 @@ function CreateCampaignModal({ onClose }: { onClose: () => void }) {
           </div>
 
           <div className="form-group" style={{ marginBottom: 12 }}>
-            <label className="form-label">Tags <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(lead deve ter pelo menos uma — vazio = todos)</span></label>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-              {form.targetTags.map((tag) => (
-                <span key={tag} style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#1e3a5f', border: '1px solid #3b82f6', borderRadius: 6, padding: '3px 8px', fontSize: 12, color: '#93c5fd' }}>
-                  {tag}
-                  <button onClick={() => removeTag(tag)} style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', padding: 0, lineHeight: 1 }}>×</button>
-                </span>
-              ))}
+            <label className="form-label">Origem <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(vazio = todas)</span></label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {allOrigins.map((origin) => {
+                const color = ORIGIN_COLORS[origin] || '#6366f1';
+                const selected = form.targetOrigins.includes(origin);
+                return (
+                  <button key={origin} type="button" onClick={() => toggleOrigin(origin)}
+                    style={{ padding: '5px 12px', borderRadius: 6, fontSize: 13, cursor: 'pointer', fontWeight: selected ? 600 : 400,
+                      border: `2px solid ${selected ? color : 'var(--border)'}`,
+                      background: selected ? `${color}22` : 'transparent',
+                      color: selected ? color : 'var(--text)' }}>
+                    {origin}
+                  </button>
+                );
+              })}
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input className="form-input" style={{ fontSize: 13 }} placeholder="Ex: gosta de áudio, vip, urgente" value={newTag}
-                onChange={(e) => setNewTag(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addTag()} />
-              <button className="btn btn-ghost" onClick={addTag} disabled={!newTag.trim()}>+</button>
+          </div>
+
+          <div className="form-group" style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <label className="form-label" style={{ marginBottom: 0 }}>
+                Etiquetas <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(vazio = todas)</span>
+              </label>
+              {form.targetTags.length > 1 && (
+                <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Modo:</span>
+                  <button type="button" onClick={() => setForm(f => ({ ...f, targetTagsMatchAll: false }))}
+                    style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', fontWeight: !form.targetTagsMatchAll ? 700 : 400,
+                      border: `1px solid ${!form.targetTagsMatchAll ? 'var(--primary)' : 'var(--border)'}`,
+                      background: !form.targetTagsMatchAll ? 'var(--primary)' : 'transparent', color: 'var(--text)' }}>
+                    OU (qualquer)
+                  </button>
+                  <button type="button" onClick={() => setForm(f => ({ ...f, targetTagsMatchAll: true }))}
+                    style={{ padding: '2px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer', fontWeight: form.targetTagsMatchAll ? 700 : 400,
+                      border: `1px solid ${form.targetTagsMatchAll ? '#10b981' : 'var(--border)'}`,
+                      background: form.targetTagsMatchAll ? '#10b98122' : 'transparent', color: form.targetTagsMatchAll ? '#10b981' : 'var(--text)' }}>
+                    E (todas)
+                  </button>
+                </div>
+              )}
             </div>
+            {(allTags as Tag[]).length === 0 ? (
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                Nenhuma etiqueta criada ainda. Crie em Configurações → Etiquetas.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {(allTags as Tag[]).map((tag) => {
+                  const selected = form.targetTags.includes(tag.name);
+                  return (
+                    <button key={tag.id} type="button" onClick={() => toggleTag(tag.name)}
+                      style={{ padding: '4px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer', fontWeight: selected ? 700 : 400,
+                        background: selected ? `${tag.color}33` : 'transparent',
+                        color: selected ? tag.color : 'var(--text-muted)',
+                        border: `1px solid ${selected ? tag.color : 'var(--border)'}` }}>
+                      {tag.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {form.targetTags.length > 1 && (
+              <div style={{ marginTop: 6, fontSize: 11, color: form.targetTagsMatchAll ? '#10b981' : 'var(--primary)' }}>
+                {form.targetTagsMatchAll
+                  ? `✅ Lead deve ter TODAS: ${form.targetTags.join(' + ')}`
+                  : `🔀 Lead deve ter pelo menos uma: ${form.targetTags.join(' ou ')}`}
+              </div>
+            )}
           </div>
 
           <div className="form-group" style={{ marginBottom: 0 }}>
@@ -163,11 +224,12 @@ function CreateCampaignModal({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
-        <div className="form-group">
-          <label className="form-label">Template / Instrução para a IA *</label>
-          <textarea className="form-textarea" style={{ minHeight: 100 }}
-            placeholder="Ex: Apresentar o Malibu, destacar unidades de 2 e 3 quartos, condições especiais de lançamento..."
-            value={form.messageTemplate} onChange={(e) => setForm((f) => ({ ...f, messageTemplate: e.target.value }))} />
+        <div className="card" style={{ marginBottom: 16, background: 'var(--bg)' }}>
+          <h4 style={{ fontWeight: 600, marginBottom: 4, fontSize: 14 }}>📋 Sequência de Envio</h4>
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
+            Monte os blocos na ordem que serão enviados. Arraste para reordenar.
+          </p>
+          <StepEditor steps={steps} onChange={setSteps} />
         </div>
 
         {/* Janela de envio */}
@@ -211,17 +273,12 @@ function CreateCampaignModal({ onClose }: { onClose: () => void }) {
           <input className="form-input" type="datetime-local" value={form.scheduledAt} onChange={(e) => setForm((f) => ({ ...f, scheduledAt: e.target.value }))} />
         </div>
 
-        <div className="form-group">
-          <label className="form-label">Mídias anexadas</label>
-          <MediaUploader attachments={mediaAttachments} onChange={setMediaAttachments} maxFiles={3} />
-        </div>
-
         {error && <div style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>{error}</div>}
 
         <div className="modal-actions">
           <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
           <button className="btn btn-primary" onClick={() => mutation.mutate()}
-            disabled={!form.name || !form.targetStages.length || !form.messageTemplate || mutation.isPending}>
+            disabled={!form.name || !form.targetStages.length || steps.length === 0 || mutation.isPending}>
             {mutation.isPending ? 'Criando...' : 'Criar Campanha'}
           </button>
         </div>
@@ -234,6 +291,8 @@ export default function Campaigns() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
+  const allSources = useAllSources();
+  const allOrigins = useAllOrigins();
 
   const { data: campaigns, isLoading } = useQuery({
     queryKey: ['campaigns'],
@@ -310,7 +369,7 @@ export default function Campaigns() {
         </div>
       )}
 
-      {showCreate && <CreateCampaignModal onClose={() => setShowCreate(false)} />}
+      {showCreate && <CreateCampaignModal onClose={() => setShowCreate(false)} allSources={allSources} allOrigins={allOrigins} />}
     </div>
   );
 }

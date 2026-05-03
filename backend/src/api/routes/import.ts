@@ -26,10 +26,11 @@ const upload = multer({
 
 const importOptsSchema = z.object({
   source: z.string().min(1),
+  origin: z.string().optional(),
   assignedNumber: z.coerce.number().refine((n) => n === 1 || n === 2),
   stage: z.enum(['COLD', 'WARMING', 'WARM', 'HOT', 'INTERESTED']).optional(),
   tags: z.string().optional(),
-  useAI: z.string().optional(), // "true" para usar IA
+  useAI: z.string().optional(),
 });
 
 async function extractTextFromFile(file: Express.Multer.File): Promise<string> {
@@ -135,6 +136,7 @@ router.post('/pdf', upload.single('file'), async (req: Request, res: Response) =
 
     const result = await importLeads(rows, {
       source: opts.source,
+      origin: opts.origin,
       assignedNumber: opts.assignedNumber as 1 | 2,
       stage: opts.stage,
       tags,
@@ -163,7 +165,13 @@ router.post('/csv', upload.single('file'), async (req: Request, res: Response) =
     const opts = importOptsSchema.parse(req.body);
     const tags = opts.tags ? JSON.parse(opts.tags) : [];
     const rows = parseCSV(req.file.buffer.toString('utf-8'));
-    const result = await importLeads(rows, { source: opts.source, assignedNumber: opts.assignedNumber as 1 | 2, stage: opts.stage, tags });
+    const result = await importLeads(rows, {
+      source: opts.source,
+      origin: opts.origin,
+      assignedNumber: opts.assignedNumber as 1 | 2,
+      stage: opts.stage,
+      tags,
+    });
     res.json(result);
   } catch (err) {
     if (err instanceof z.ZodError) return res.status(400).json({ error: 'Dados inválidos' });

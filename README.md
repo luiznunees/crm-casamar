@@ -66,6 +66,11 @@ O dashboard abre em `http://localhost:5173`.
 | `EVOLUTION_INSTANCE_1` | Nome da instância 1 (número 1) |
 | `EVOLUTION_INSTANCE_2` | Nome da instância 2 (número 2) |
 | `PORT` | Porta do servidor (default: 3001) |
+| `JWT_SECRET` | Secret para assinar JWT da API |
+| `STORAGE_ENDPOINT` | Endpoint S3 ou compatível (MinIO, R2, etc) |
+| `STORAGE_BUCKET` | Nome do bucket |
+| `STORAGE_ACCESS_KEY` | Access Key do bucket |
+| `STORAGE_SECRET_KEY` | Secret Key do bucket |
 
 ---
 

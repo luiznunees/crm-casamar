@@ -2,16 +2,17 @@ import { useState, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2, Upload, FileText, Table, Hash } from 'lucide-react';
 import { importApi, type LeadList, type ImportResult, type ExtractResult, type CSVPreviewResult } from '../api/client';
-import { STAGE_LABELS, SOURCES } from '../constants';
+import { STAGE_LABELS, SOURCES, DEFAULT_ORIGINS } from '../constants';
 import type { Stage } from '../api/client';
 
 const COLORS = ['#6366f1','#f59e0b','#22c55e','#ef4444','#3b82f6','#ec4899'];
 
-function Opts({ source, setSource, stage, setStage, tags, setTags, lists, onNew }: any) {
+function Opts({ source, setSource, origin, setOrigin, stage, setStage, tags, setTags, lists, onNew }: any) {
   const qc = useQueryClient();
   const [show, setShow] = useState(false);
   const [nm, setNm] = useState('');
   const [col, setCol] = useState('#6366f1');
+  const [customOrigin, setCustomOrigin] = useState('');
   const save = async () => {
     if (!nm.trim()) return;
     await importApi.lists.create({ name: nm.trim(), color: col });
@@ -41,6 +42,19 @@ function Opts({ source, setSource, stage, setStage, tags, setTags, lists, onNew 
           {SOURCES.map((s: string) => <option key={s} value={s}>{s}</option>)}
         </select>
       </div>
+
+      <div className="form-group" style={{ marginBottom: 0 }}>
+        <label className="form-label">Origem (canal de aquisição) *</label>
+        <select className="form-select" value={origin} onChange={e => setOrigin(e.target.value)}>
+          {DEFAULT_ORIGINS.map((o: string) => <option key={o} value={o}>{o}</option>)}
+          <option value="__custom__">+ Outra origem...</option>
+        </select>
+        {origin === '__custom__' && (
+          <input className="form-input" style={{ marginTop: 6, fontSize: 13 }} placeholder="Ex: Indicação, Evento, Feira..."
+            value={customOrigin} onChange={e => { setCustomOrigin(e.target.value); setOrigin(e.target.value); }} />
+        )}
+      </div>
+
       <div style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--text-muted)', display: 'flex', gap: 8 }}>
         <span>🔀</span><div><span style={{ fontWeight: 500, color: 'var(--text)' }}>Chip automático</span><span style={{ marginLeft: 8 }}>— distribuído entre chip 1 e 2 aleatoriamente</span></div>
       </div>
@@ -51,7 +65,7 @@ function Opts({ source, setSource, stage, setStage, tags, setTags, lists, onNew 
         </div>
         <div className="form-group" style={{ marginBottom: 0 }}>
           <label className="form-label">Tags</label>
-          <input className="form-input" placeholder="vip, feira" value={tags} onChange={e => setTags(e.target.value)} />
+          <input className="form-input" placeholder="vip, serra, super-rico" value={tags} onChange={e => setTags(e.target.value)} />
         </div>
       </div>
     </div>
@@ -85,10 +99,11 @@ function PDFTab({ lists }: { lists: LeadList[] }) {
   const [res, setRes] = useState<ImportResult|null>(null);
   const [loading, setLoading] = useState(false);
   const [source, setSource] = useState('');
+  const [origin, setOrigin] = useState('Orgânico');
   const [stage, setStage] = useState<Stage>('COLD');
   const [tags, setTags] = useState('');
   const ref = useRef<HTMLInputElement>(null);
-  const opts = { source, assignedNumber: 1 as const, stage, tags: tags ? tags.split(',').map(t => t.trim()).filter(Boolean) : [] };
+  const opts = { source, origin, assignedNumber: 1 as const, stage, tags: tags ? tags.split(',').map(t => t.trim()).filter(Boolean) : [] };
   return (
     <div>
       <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>Faça upload de um PDF ou TXT. O sistema extrai automaticamente todos os números de telefone brasileiros.</p>
@@ -103,7 +118,7 @@ function PDFTab({ lists }: { lists: LeadList[] }) {
         <div>
           <div style={{ background: '#1a3a2a', border: '1px solid var(--success)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: 'var(--success)' }}>✅ <strong>{ext.totalFound}</strong> telefones encontrados em "{ext.fileName}"</div>
           <div style={{ maxHeight: 100, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: '8px 12px', marginBottom: 16, display: 'flex', flexWrap: 'wrap', gap: 6 }}>{ext.phones.map(p => <span key={p} style={{ background: 'var(--bg-hover)', borderRadius: 4, padding: '2px 8px', fontSize: 12 }}>{p}</span>)}</div>
-          <div className="card" style={{ marginBottom: 16 }}><h4 style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>Configurar importação</h4><Opts source={source} setSource={setSource} stage={stage} setStage={setStage} tags={tags} setTags={setTags} lists={lists} onNew={setSource} /></div>
+          <div className="card" style={{ marginBottom: 16 }}><h4 style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>Configurar importação</h4><Opts source={source} setSource={setSource} origin={origin} setOrigin={setOrigin} stage={stage} setStage={setStage} tags={tags} setTags={setTags} lists={lists} onNew={setSource} /></div>
           <button className="btn btn-primary" onClick={async () => { setLoading(true); try { setRes((await importApi.pdf.import(file!, opts)).data); } catch (e: any) { alert(e?.response?.data?.error || 'Erro'); } finally { setLoading(false); } }} disabled={!source || loading}><Upload size={14} /> {loading ? 'Importando...' : `Importar ${ext.totalFound} leads`}</button>
         </div>
       )}
@@ -118,13 +133,14 @@ function CSVTab({ lists }: { lists: LeadList[] }) {
   const [res, setRes] = useState<ImportResult|null>(null);
   const [loading, setLoading] = useState(false);
   const [source, setSource] = useState('');
+  const [origin, setOrigin] = useState('Orgânico');
   const [stage, setStage] = useState<Stage>('COLD');
   const [tags, setTags] = useState('');
   const ref = useRef<HTMLInputElement>(null);
-  const opts = { source, assignedNumber: 1 as const, stage, tags: tags ? tags.split(',').map(t => t.trim()).filter(Boolean) : [] };
+  const opts = { source, origin, assignedNumber: 1 as const, stage, tags: tags ? tags.split(',').map(t => t.trim()).filter(Boolean) : [] };
   return (
     <div>
-      <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>Importe um CSV com colunas: <code style={{ background: 'var(--bg)', padding: '1px 4px', borderRadius: 3 }}>telefone, nome, email, observacoes</code></p>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>Importe um CSV com colunas: <code style={{ background: 'var(--bg)', padding: '1px 4px', borderRadius: 3 }}>telefone, nome, email, cidade</code></p>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>Primeira linha = cabeçalho. Separador: vírgula ou ponto-e-vírgula.</p>
       <div onClick={() => ref.current?.click()} style={{ border: `2px dashed ${file ? 'var(--primary)' : 'var(--border)'}`, borderRadius: 10, padding: '32px 20px', textAlign: 'center', cursor: 'pointer', background: file ? 'rgba(99,102,241,0.05)' : 'transparent', marginBottom: 16 }} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) { setFile(f); setPrev(null); setRes(null); } }}>
         <Table size={32} style={{ color: file ? 'var(--primary)' : 'var(--text-muted)', marginBottom: 8 }} />
@@ -140,7 +156,7 @@ function CSVTab({ lists }: { lists: LeadList[] }) {
             <table className="table" style={{ fontSize: 12 }}><thead><tr><th>Telefone</th><th>Nome</th><th>Email</th></tr></thead><tbody>{prev.preview.map((r, i) => <tr key={i}><td>{r.phone}</td><td style={{ color: 'var(--text-muted)' }}>{r.name || '—'}</td><td style={{ color: 'var(--text-muted)' }}>{r.email || '—'}</td></tr>)}</tbody></table>
             {prev.totalFound > 10 && <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text-muted)', borderTop: '1px solid var(--border)' }}>Mostrando 10 de {prev.totalFound}</div>}
           </div>
-          <div className="card" style={{ marginBottom: 16 }}><h4 style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>Configurar importação</h4><Opts source={source} setSource={setSource} stage={stage} setStage={setStage} tags={tags} setTags={setTags} lists={lists} onNew={setSource} /></div>
+          <div className="card" style={{ marginBottom: 16 }}><h4 style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>Configurar importação</h4><Opts source={source} setSource={setSource} origin={origin} setOrigin={setOrigin} stage={stage} setStage={setStage} tags={tags} setTags={setTags} lists={lists} onNew={setSource} /></div>
           <button className="btn btn-primary" onClick={async () => { setLoading(true); try { setRes((await importApi.csv.import(file!, opts)).data); } catch (e: any) { alert(e?.response?.data?.error || 'Erro'); } finally { setLoading(false); } }} disabled={!source || loading}><Upload size={14} /> {loading ? 'Importando...' : `Importar ${prev.totalFound} leads`}</button>
         </div>
       )}
@@ -154,10 +170,11 @@ function BulkTab({ lists }: { lists: LeadList[] }) {
   const [res, setRes] = useState<ImportResult|null>(null);
   const [loading, setLoading] = useState(false);
   const [source, setSource] = useState('');
+  const [origin, setOrigin] = useState('Orgânico');
   const [stage, setStage] = useState<Stage>('COLD');
   const [tags, setTags] = useState('');
   const cnt = (text.match(/\b\d{10,11}\b/g) || []).length;
-  const opts = { source, assignedNumber: 1 as const, stage, tags: tags ? tags.split(',').map(t => t.trim()).filter(Boolean) : [] };
+  const opts = { source, origin, assignedNumber: 1 as const, stage, tags: tags ? tags.split(',').map(t => t.trim()).filter(Boolean) : [] };
   return (
     <div>
       <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>Cole uma lista de números, texto de WhatsApp, planilha copiada — o sistema extrai os telefones automaticamente.</p>
@@ -165,7 +182,7 @@ function BulkTab({ lists }: { lists: LeadList[] }) {
         <label className="form-label">Cole o texto aqui {cnt > 0 && <span style={{ marginLeft: 8, color: 'var(--primary)', fontWeight: 600 }}>{cnt} número(s) detectado(s)</span>}</label>
         <textarea className="form-textarea" style={{ minHeight: 160, fontFamily: 'monospace', fontSize: 12 }} placeholder={'Cole qualquer texto com números:\n\n(51) 99999-9999\n51988887777'} value={text} onChange={e => { setText(e.target.value); setRes(null); }} />
       </div>
-      <div className="card" style={{ marginBottom: 16 }}><h4 style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>Configurar importação</h4><Opts source={source} setSource={setSource} stage={stage} setStage={setStage} tags={tags} setTags={setTags} lists={lists} onNew={setSource} /></div>
+      <div className="card" style={{ marginBottom: 16 }}><h4 style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>Configurar importação</h4><Opts source={source} setSource={setSource} origin={origin} setOrigin={setOrigin} stage={stage} setStage={setStage} tags={tags} setTags={setTags} lists={lists} onNew={setSource} /></div>
       <button className="btn btn-primary" onClick={async () => { setLoading(true); try { setRes((await importApi.bulk(text, opts)).data); } catch (e: any) { alert(e?.response?.data?.error || 'Erro'); } finally { setLoading(false); } }} disabled={!text || !source || cnt === 0 || loading}><Upload size={14} /> {loading ? 'Importando...' : `Importar ${cnt} número(s)`}</button>
       {res && <ResultCard result={res} />}
     </div>

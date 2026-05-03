@@ -1,13 +1,13 @@
 import prisma from '../prisma/client';
 import { Stage, PreferredContact, Prisma } from '@prisma/client';
 import { autoEnrollLead } from './followUpService';
-import { startWarmingFlow } from './warmingFlowService';
 
 export interface CreateLeadInput {
   name?: string;
   phone: string;
   email?: string;
   source: string;
+  origin?: string;
   stage?: Stage;
   assignedNumber: 1 | 2;
   preferredContact?: PreferredContact;
@@ -19,6 +19,7 @@ export interface UpdateLeadInput {
   name?: string;
   email?: string;
   source?: string;
+  origin?: string;
   stage?: Stage;
   nameCollected?: boolean;
   preferredContact?: PreferredContact;
@@ -43,6 +44,7 @@ export async function createLead(data: CreateLeadInput) {
       phone: data.phone,
       email: data.email,
       source: data.source,
+      origin: data.origin || 'Orgânico',
       stage: data.stage || 'COLD',
       nameCollected: !!data.name,
       assignedNumber: data.assignedNumber,

@@ -13,6 +13,10 @@ export interface AIConfigData {
   signatureTemplate: string;
   splitMessages: boolean;
   blockDelaySeconds: number;
+  // Anti-ban
+  dailyLimitPerChip: number;
+  minDelaySeconds: number;
+  maxDelaySeconds: number;
   updatedAt: Date;
 }
 
@@ -28,6 +32,9 @@ export interface AIConfigInput {
   signatureTemplate?: string;
   splitMessages?: boolean;
   blockDelaySeconds?: number;
+  dailyLimitPerChip?: number;
+  minDelaySeconds?: number;
+  maxDelaySeconds?: number;
 }
 
 const DEFAULT_CONFIG: AIConfigData = {
@@ -43,10 +50,12 @@ const DEFAULT_CONFIG: AIConfigData = {
   signatureTemplate: '',
   splitMessages: true,
   blockDelaySeconds: 3,
+  dailyLimitPerChip: 300,
+  minDelaySeconds: 20,
+  maxDelaySeconds: 60,
   updatedAt: new Date(),
 };
 
-// Lê via SQL raw — não depende do Prisma client gerado
 export async function getAIConfig(): Promise<AIConfigData> {
   try {
     const rows = await prisma.$queryRawUnsafe<AIConfigData[]>(
@@ -58,11 +67,13 @@ export async function getAIConfig(): Promise<AIConfigData> {
     return {
       ...DEFAULT_CONFIG,
       ...row,
-      // Garante que arrays são arrays (PostgreSQL retorna como array nativo)
       forbiddenWords: Array.isArray(row.forbiddenWords) ? row.forbiddenWords : [],
       mustInclude: Array.isArray(row.mustInclude) ? row.mustInclude : [],
       splitMessages: row.splitMessages ?? true,
       blockDelaySeconds: row.blockDelaySeconds ?? 3,
+      dailyLimitPerChip: row.dailyLimitPerChip ?? 300,
+      minDelaySeconds: row.minDelaySeconds ?? 20,
+      maxDelaySeconds: row.maxDelaySeconds ?? 60,
     };
   } catch (err) {
     console.warn('[AIConfig] Erro ao ler config, usando padrão:', (err as Error).message);
@@ -70,7 +81,6 @@ export async function getAIConfig(): Promise<AIConfigData> {
   }
 }
 
-// Salva via SQL raw com upsert
 export async function updateAIConfig(data: AIConfigInput): Promise<AIConfigData> {
   const current = await getAIConfig();
   const merged = { ...current, ...data };
@@ -84,7 +94,9 @@ export async function updateAIConfig(data: AIConfigInput): Promise<AIConfigData>
       "globalRules", "toneInstructions",
       "forbiddenWords", "mustInclude",
       "maxLength", "signatureTemplate",
-      "splitMessages", "blockDelaySeconds", "updatedAt"
+      "splitMessages", "blockDelaySeconds",
+      "dailyLimitPerChip", "minDelaySeconds", "maxDelaySeconds",
+      "updatedAt"
     ) VALUES (
       'default',
       '${esc(merged.personaName)}',
@@ -98,6 +110,9 @@ export async function updateAIConfig(data: AIConfigInput): Promise<AIConfigData>
       '${esc(merged.signatureTemplate)}',
       ${merged.splitMessages},
       ${merged.blockDelaySeconds},
+      ${merged.dailyLimitPerChip},
+      ${merged.minDelaySeconds},
+      ${merged.maxDelaySeconds},
       NOW()
     )
     ON CONFLICT ("id") DO UPDATE SET
@@ -112,13 +127,15 @@ export async function updateAIConfig(data: AIConfigInput): Promise<AIConfigData>
       "signatureTemplate" = EXCLUDED."signatureTemplate",
       "splitMessages"     = EXCLUDED."splitMessages",
       "blockDelaySeconds" = EXCLUDED."blockDelaySeconds",
+      "dailyLimitPerChip" = EXCLUDED."dailyLimitPerChip",
+      "minDelaySeconds"   = EXCLUDED."minDelaySeconds",
+      "maxDelaySeconds"   = EXCLUDED."maxDelaySeconds",
       "updatedAt"         = NOW();
   `);
 
   return getAIConfig();
 }
 
-// Escapa aspas simples para SQL
 function esc(val: string | undefined | null): string {
   return (val ?? '').replace(/'/g, "''");
 }

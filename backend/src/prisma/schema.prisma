@@ -45,13 +45,15 @@ model Lead {
   name             String?
   phone            String           @unique
   email            String?
-  source           String           // nome do empreendimento: "Iniciada", "Malibu", "Amari", etc.
+  source           String           // empreendimento de interesse: "Malibu", "Amari", etc.
+  origin           String           @default("Orgânico") // canal de aquisição: "Tráfego Pago", "Site", "Corretor", "Orgânico", etc.
   stage            Stage            @default(COLD)
   nameCollected    Boolean          @default(false)
   firstMessageSent Boolean          @default(false)
-  unreadCount      Int              @default(0)   // mensagens recebidas não lidas
-  lastMessageAt    DateTime?                       // timestamp da última mensagem (qualquer direção)
-  assignedNumber   Int              // 1 ou 2 — definido na criação, nunca muda
+  engagementScore  Int              @default(0)
+  unreadCount      Int              @default(0)
+  lastMessageAt    DateTime?
+  assignedNumber   Int
   preferredContact PreferredContact @default(WHATSAPP)
   observations     String?
   tags             String[]         @default([])
@@ -65,6 +67,7 @@ model Lead {
 
   @@index([stage])
   @@index([source])
+  @@index([origin])
   @@index([assignedNumber])
 }
 
@@ -84,21 +87,30 @@ model Message {
 }
 
 model Campaign {
-  id               String         @id @default(uuid())
-  name             String
-  targetStages     Stage[]
-  targetSources    String[]       // listas/empreendimentos
-  targetTags       String[]       @default([]) // filtro por tags
-  targetPreferredContact String[] @default([]) // WHATSAPP | AUDIO | CALL
-  messageTemplate  String
-  scheduledAt      DateTime?
-  status           CampaignStatus @default(DRAFT)
-  mediaAttachments Json[]         @default([])
-  sendWindowStart  String?
-  sendWindowEnd    String?
-  sendWindowDays   Int[]          @default([])
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  id                   String         @id @default(uuid())
+  name                 String
+  targetStages         Stage[]
+  targetSources        String[]
+  targetOrigins        String[]       @default([])
+  targetTags           String[]       @default([])
+  targetTagsMatchAll   Boolean        @default(false)
+  targetPreferredContact String[]     @default([])
+  messageTemplate      String         @default("")  // legado — mantido para compatibilidade
+  steps                Json[]         @default([])  // novo: array de blocos do editor visual
+  scheduledAt          DateTime?
+  status               CampaignStatus @default(DRAFT)
+  mediaAttachments     Json[]         @default([])  // legado
+  sendWindowStart      String?
+  sendWindowEnd        String?
+  sendWindowDays       Int[]          @default([])
+  // Enquete pós-mensagem (legado — agora dentro de steps)
+  pollEnabled          Boolean        @default(false)
+  pollQuestion         String         @default("")
+  pollOptionYes        String         @default("Sim, quero acessar")
+  pollOptionNo         String         @default("Agora não")
+  pollTagOnYes         String         @default("")
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
 
   campaignLeads    CampaignLead[]
 }
@@ -119,6 +131,10 @@ model AIConfig {
   // Mensagens em blocos separados
   splitMessages     Boolean  @default(true)   // envia como múltiplas mensagens
   blockDelaySeconds Int      @default(3)      // delay em segundos entre cada bloco
+  // Limites de disparo anti-ban
+  dailyLimitPerChip Int      @default(300)    // máximo de mensagens por chip por dia
+  minDelaySeconds   Int      @default(20)     // delay mínimo entre mensagens (segundos)
+  maxDelaySeconds   Int      @default(60)     // delay máximo entre mensagens (segundos)
   updatedAt         DateTime @updatedAt
 }
 
@@ -238,11 +254,21 @@ model AutoReplyConfig {
 // ── Lead Lists (listas de importação) ────────────────────────────────────────
 model LeadList {
   id          String   @id @default(uuid())
-  name        String   // ex: "Feira do Imóvel Março"
+  name        String
   description String   @default("")
-  color       String   @default("#6366f1") // cor para identificação visual
+  color       String   @default("#6366f1")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+// ── Tags gerenciáveis ─────────────────────────────────────────────────────────
+// Tags universais criadas manualmente — aplicadas em leads e usadas para filtrar campanhas
+model Tag {
+  id          String   @id @default(uuid())
+  name        String   @unique  // ex: "beira lago", "mobiliado", "3 quartos"
+  color       String   @default("#6366f1")
+  description String   @default("")
+  createdAt   DateTime @default(now())
 }
 
 // ── Warming Flow ──────────────────────────────────────────────────────────────

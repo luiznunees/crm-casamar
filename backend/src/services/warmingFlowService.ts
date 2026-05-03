@@ -9,334 +9,291 @@ import { log } from '../utils/logger';
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const MODEL = 'llama-3.3-70b-versatile';
 
-// ── Análise de resposta com IA ────────────────────────────────────────────────
+/**
+ * Tenta extrair um nome de uma mensagem recebida.
+ *
+ * Estratégia passiva — sem perguntar nada ao lead.
+ * Captura padrões como:
+ *   "João"  /  "Me chamo Maria"  /  "Sou o Carlos"  /  "Ana Silva"
+ */
+export function extractNameFromMessage(content: string): string | null {
+  const cleaned = content.trim();
 
-async function analyzeResponse(
-  message: string,
-  context: 'name_question' | 'optin_question'
-): Promise<{ type: 'name' | 'positive' | 'negative' | 'unclear'; extractedName?: string }> {
-  const systemPrompt = context === 'name_question'
-    ? `Analise a mensagem e determine se é um nome de pessoa.
-Retorne JSON: {"type": "name", "extractedName": "Nome"} se for um nome
-Retorne JSON: {"type": "negative"} se a pessoa recusou ou disse que não quer dar o nome
-Retorne JSON: {"type": "unclear"} se não ficou claro
-Exemplos de nome: "João", "Me chamo Maria", "Sou o Carlos", "Ana Silva"
-Exemplos de negativo: "não", "prefiro não", "pra que?", "não quero"
-Seja generoso — se parecer um nome, classifique como nome.`
-    : `Analise a mensagem e determine se é uma resposta positiva ou negativa.
-Retorne JSON: {"type": "positive"} se a pessoa quer receber ofertas/novidades
-Retorne JSON: {"type": "negative"} se a pessoa não quer
-Retorne JSON: {"type": "unclear"} se não ficou claro
-Positivo: "sim", "claro", "pode mandar", "quero", "ok", "tá bom"
-Negativo: "não", "nao", "não quero", "para de me mandar", "sai"`;
+  // Mensagens longas dificilmente são só um nome
+  if (cleaned.length > 80) return null;
+
+  // Padrões explícitos de apresentação
+  const explicitPatterns = [
+    /^(?:me chamo|meu nome é|meu nome e|sou o|sou a|pode me chamar de|pode chamar de|aqui é o|aqui é a|aqui é)\s+([A-ZÀ-Úa-zà-ú][a-zà-ú]+(?:\s+[A-ZÀ-Úa-zà-ú][a-zà-ú]+)*)/i,
+    /^(?:oi|olá|ola|bom dia|boa tarde|boa noite)[,!]?\s+(?:me chamo|sou o|sou a|meu nome é)\s+([A-ZÀ-Úa-zà-ú][a-zà-ú]+(?:\s+[A-ZÀ-Úa-zà-ú][a-zà-ú]+)*)/i,
+  ];
+
+  for (const pattern of explicitPatterns) {
+    const match = cleaned.match(pattern);
+    if (match?.[1]?.trim().length >= 2) {
+      return capitalize(match[1].trim());
+    }
+  }
+
+  // Mensagem que é só um nome (1 ou 2 palavras, sem pontuação estranha)
+  // Ex: "João", "Ana Silva", "Carlos Eduardo"
+  const nameOnly = /^([A-ZÀ-Úa-zà-ú][a-zà-ú]{1,}(?:\s+[A-ZÀ-Úa-zà-ú][a-zà-ú]{1,})?)$/;
+  const match = cleaned.match(nameOnly);
+  if (match?.[1]) {
+    const candidate = match[1].trim();
+    // Rejeita palavras comuns que não são nomes
+    const notNames = [
+      'oi', 'olá', 'ola', 'sim', 'não', 'nao', 'ok', 'tudo', 'bem', 'bom', 'boa',
+      'dia', 'tarde', 'noite', 'obrigado', 'obrigada', 'certo', 'claro', 'pode',
+      'quero', 'queria', 'gostaria', 'preciso', 'tenho', 'tenho', 'interesse',
+      'informações', 'informacoes', 'apartamento', 'imóvel', 'imovel', 'casa',
+    ];
+    if (!notNames.includes(candidate.toLowerCase()) && candidate.length >= 3) {
+      return capitalize(candidate);
+    }
+  }
+
+  return null;
+}
+
+function capitalize(str: string): string {
+  return str
+    .split(' ')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/**
+ * Processa uma mensagem recebida de um lead sem nome.
+ * Tenta extrair o nome passivamente — sem enviar nenhuma pergunta.
+ * Se encontrar um nome, salva e avança o stage para WARMING.
+ *
+ * Retorna true se o nome foi coletado.
+ */
+export async function tryCollectName(lead: Lead, message: string): Promise<boolean> {
+  if (lead.nameCollected && lead.name) return false;
+
+  const name = extractNameFromMessage(message);
+  if (!name) return false;
+
+  await prisma.lead.update({
+    where: { id: lead.id },
+    data: {
+      name,
+      nameCollected: true,
+      stage: lead.stage === 'COLD' ? 'WARMING' : lead.stage,
+      updatedAt: new Date(),
+    },
+  });
+
+  log.lead(`Nome coletado passivamente: "${name}" ← ${lead.phone}`);
+  return true;
+}
+
+/**
+ * Quando um lead COLD responde pela primeira vez, avança para WARMING.
+ * Não envia nenhuma mensagem automática.
+ * Retorna true se o stage foi alterado.
+ */
+export async function advanceFromCold(lead: Lead): Promise<boolean> {
+  if (lead.stage !== 'COLD') return false;
+
+  await prisma.lead.update({
+    where: { id: lead.id },
+    data: { stage: 'WARMING', updatedAt: new Date() },
+  });
+
+  log.lead(`${lead.phone} respondeu → COLD → WARMING`);
+  return true;
+}
+
+/**
+ * Verifica se um lead tem opt-out (tag 'opt-out').
+ */
+export async function hasOptOut(leadId: string): Promise<boolean> {
+  const lead = await prisma.lead.findUnique({
+    where: { id: leadId },
+    select: { tags: true },
+  });
+  return lead?.tags.includes('opt-out') ?? false;
+}
+
+/**
+ * Envia os 3 formatos de opt-in para comparação visual.
+ * Usado apenas em modo de teste — em produção usa só um formato.
+ */
+export async function sendOptInComparison(lead: Lead): Promise<void> {
+  const source = lead.source;
 
   try {
+    // ── Formato 1: Texto simples com números ──────────────────────────────
+    await sendTyping(lead, 80);
+    await sendTextMessage(lead,
+      `Posso te enviar novidades e ofertas sobre ${source}?\n\n1️⃣ Sim, pode mandar!\n2️⃣ Não, obrigado`
+    );
+    await saveMessage({ leadId: lead.id, direction: 'SENT', content: `[Formato 1 - Texto] Opt-in ${source}`, type: 'TEXT', fromNumber: lead.assignedNumber });
+
+    await sleep(4000);
+
+    // ── Formato 2: Enquete (Poll) ─────────────────────────────────────────
+    await sendPollMessage(
+      lead,
+      `Posso te enviar novidades sobre ${source}?`,
+      ['👍 Sim, pode mandar!', '👎 Não, obrigado'],
+      1
+    );
+    await saveMessage({ leadId: lead.id, direction: 'SENT', content: `[Formato 2 - Poll] Opt-in ${source}`, type: 'TEXT', fromNumber: lead.assignedNumber });
+
+    await sleep(4000);
+
+    // ── Formato 3: Lista interativa ───────────────────────────────────────
+    await sendListMessage(
+      lead,
+      `Novidades sobre ${source}`,
+      `Posso te enviar ofertas e lançamentos sobre ${source}?`,
+      'Ver opções',
+      [
+        {
+          title: 'Sua preferência',
+          rows: [
+            { rowId: 'optin_yes', title: '✅ Sim, pode mandar!', description: 'Quero receber novidades' },
+            { rowId: 'optin_no',  title: '❌ Não, obrigado',     description: 'Prefiro não receber' },
+          ],
+        },
+      ]
+    );
+    await saveMessage({ leadId: lead.id, direction: 'SENT', content: `[Formato 3 - Lista] Opt-in ${source}`, type: 'TEXT', fromNumber: lead.assignedNumber });
+
+    log.ok(`3 formatos de opt-in enviados para ${lead.name || lead.phone}`);
+  } catch (err) {
+    log.error('Erro ao enviar comparação de opt-in', err);
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Gera uma variação da pergunta de opt-in usando IA.
+ * Cada lead recebe uma frase diferente — evita fingerprint de robô.
+ */
+async function generateOptInQuestion(lead: Lead): Promise<string> {
+  try {
+    const config = await getAIConfig();
     const completion = await groq.chat.completions.create({
       model: MODEL,
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: message },
+        {
+          role: 'system',
+          content: `Você é ${config.personaName}, ${config.personaRole} da ${config.companyName}.
+Gere UMA pergunta curta e casual de WhatsApp perguntando se a pessoa quer receber novidades sobre o empreendimento.
+REGRAS:
+- Máximo 1 linha
+- Tom natural, como se fosse uma pessoa real digitando
+- NÃO use opções numeradas, NÃO use "1️⃣", NÃO use "👍/👎"
+- Pode usar no máximo 1 emoji leve (opcional)
+- Varie a estrutura da frase — não comece sempre com "Posso"
+- Seed de variação: ${Date.now()}
+Responda APENAS com o texto da mensagem, sem aspas.`,
+        },
+        {
+          role: 'user',
+          content: `Empreendimento: ${lead.source}. Lead: ${lead.name || 'sem nome ainda'}.`,
+        },
       ],
-      temperature: 0.1,
-      max_tokens: 100,
+      temperature: 1.2,
+      max_tokens: 80,
     });
 
-    const raw = completion.choices[0]?.message?.content?.trim() || '{}';
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return { type: 'unclear' };
-    return JSON.parse(jsonMatch[0]);
-  } catch {
-    return { type: 'unclear' };
-  }
-}
-
-// ── Geração de mensagens ──────────────────────────────────────────────────────
-
-async function generateNameQuestion(lead: Lead): Promise<string> {
-  const config = await getAIConfig();
-  const completion = await groq.chat.completions.create({
-    model: MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `Você é ${config.personaName}, ${config.personaRole} da ${config.companyName}.
-Gere uma mensagem curta e casual de WhatsApp perguntando o nome da pessoa.
-Tom: amigável, natural, não robótico.
-Máximo 2 linhas. Seed: ${Date.now()}
-Responda APENAS com o texto da mensagem.`,
-      },
-      { role: 'user', content: `Gere a mensagem para um novo contato do empreendimento ${lead.source}.` },
-    ],
-    temperature: 1.0,
-    max_tokens: 100,
-  });
-  return completion.choices[0]?.message?.content?.trim() || `Oi! Sou ${config.personaName} da ${config.companyName}. Como posso te chamar? 😊`;
-}
-
-async function generateOptInQuestion(lead: Lead, name?: string): Promise<string> {
-  const config = await getAIConfig();
-  const nameStr = name || 'você';
-  const completion = await groq.chat.completions.create({
-    model: MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `Você é ${config.personaName}, ${config.personaRole} da ${config.companyName}.
-Gere uma mensagem curta perguntando se a pessoa quer receber novidades e ofertas de imóveis.
-Tom: respeitoso, sem pressão, casual.
-Máximo 2 linhas. Seed: ${Date.now()}
-Responda APENAS com o texto da mensagem.`,
-      },
-      { role: 'user', content: `Gere a mensagem para ${nameStr}, interessado em ${lead.source}.` },
-    ],
-    temperature: 1.0,
-    max_tokens: 120,
-  });
-  return completion.choices[0]?.message?.content?.trim() || `Tudo bem! Posso te enviar novidades e ofertas sobre ${lead.source}? 🏠`;
-}
-
-async function generateOptOutConfirmation(): Promise<string> {
-  return 'Tudo bem! Não vou mais te incomodar. Se precisar de algo, é só chamar! 😊';
-}
-
-async function generateWelcomeAfterName(name: string, lead: Lead): Promise<string> {
-  const config = await getAIConfig();
-  const completion = await groq.chat.completions.create({
-    model: MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `Você é ${config.personaName}, ${config.personaRole} da ${config.companyName}.
-Gere uma mensagem curta e calorosa agradecendo o nome e se apresentando melhor.
-Mencione o empreendimento ${lead.source} de forma natural.
-Máximo 3 linhas. Seed: ${Date.now()}
-Responda APENAS com o texto da mensagem.`,
-      },
-      { role: 'user', content: `O lead disse que se chama ${name}.` },
-    ],
-    temperature: 1.0,
-    max_tokens: 150,
-  });
-  return completion.choices[0]?.message?.content?.trim() || `Prazer, ${name}! Fico feliz em te conhecer. Tenho ótimas opções no ${lead.source} para te mostrar! 🏠`;
-}
-
-// ── Envio de mensagem ─────────────────────────────────────────────────────────
-
-async function sendWarmingMessage(lead: Lead, message: string): Promise<void> {
-  await sendTyping(lead, message.length);
-  await sendTextMessage(lead, message);
-  await saveMessage({
-    leadId: lead.id,
-    direction: 'SENT',
-    content: message,
-    type: 'TEXT',
-    fromNumber: lead.assignedNumber,
-  });
-  await prisma.lead.update({
-    where: { id: lead.id },
-    data: { lastMessageAt: new Date() },
-  });
-}
-
-// ── Fluxo principal ───────────────────────────────────────────────────────────
-
-/**
- * Inicia o fluxo de aquecimento para um lead COLD sem nome.
- * Chamado quando o lead é criado ou quando a primeira mensagem é enviada.
- */
-export async function startWarmingFlow(leadId: string): Promise<void> {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
-  if (!lead) return;
-
-  // Só inicia se COLD e sem nome
-  if (lead.stage !== 'COLD' || lead.nameCollected) return;
-
-  // Verifica se já tem fluxo ativo
-  const existing = await prisma.warmingFlow.findUnique({ where: { leadId } });
-  if (existing?.active) return;
-
-  try {
-    const message = await generateNameQuestion(lead);
-    await sendWarmingMessage(lead, message);
-
-    await prisma.warmingFlow.upsert({
-      where: { leadId },
-      create: { id: require('crypto').randomUUID(), leadId, step: 1, active: true },
-      update: { step: 1, active: true, optOut: false, updatedAt: new Date() },
-    });
-
-    await prisma.lead.update({
-      where: { id: leadId },
-      data: { firstMessageSent: true },
-    });
-
-    log.ok(`Warming flow iniciado para ${lead.phone}`);
+    const text = completion.choices[0]?.message?.content?.trim();
+    if (text && text.length > 5) return text;
   } catch (err) {
-    log.error('Erro ao iniciar warming flow', err);
+    log.error('Erro ao gerar variação de opt-in, usando fallback', err);
   }
+
+  // Fallback com variações locais caso a IA falhe
+  const fallbacks = [
+    `Posso te enviar novidades sobre ${lead.source}? 😊`,
+    `Te mando as informações sobre ${lead.source}?`,
+    `Quer receber as novidades do ${lead.source}?`,
+    `Posso te passar as ofertas do ${lead.source}?`,
+    `Tem interesse em receber atualizações sobre ${lead.source}?`,
+  ];
+  return fallbacks[Math.floor(Math.random() * fallbacks.length)];
 }
 
 /**
- * Processa a resposta do lead no fluxo de aquecimento.
- * Chamado pelo webhook quando o lead responde.
- * 
- * REGRA: só ativa quando o lead responde e não tem nome.
- * O fluxo NÃO é iniciado na importação — só quando o lead responde.
+ * Envia uma pergunta de opt-in com variação gerada por IA.
+ * Parece humano — cada lead recebe uma frase diferente.
  */
-export async function processWarmingResponse(lead: Lead, message: string): Promise<boolean> {
-  // Se já tem nome, não precisa do fluxo
-  if (lead.nameCollected && lead.name) return false;
+export async function sendOptInPoll(lead: Lead): Promise<void> {
+  try {
+    const msg = await generateOptInQuestion(lead);
 
-  // Busca fluxo existente
-  let flow = await prisma.warmingFlow.findUnique({ where: { leadId: lead.id } });
+    await sendTyping(lead, msg.length);
+    await sendTextMessage(lead, msg);
 
-  // Se não tem fluxo ativo e o lead não tem nome → inicia agora (primeira resposta)
-  if (!flow || !flow.active) {
-    if (!lead.nameCollected) {
-      // Lead respondeu pela primeira vez sem ter nome → pergunta o nome
-      log.lead(`Warming flow: ${lead.phone} respondeu sem nome → iniciando fluxo`);
-      try {
-        const nameQuestion = await generateNameQuestion(lead);
-        await sendWarmingMessage(lead, nameQuestion);
+    await saveMessage({
+      leadId: lead.id,
+      direction: 'SENT',
+      content: msg,
+      type: 'TEXT',
+      fromNumber: lead.assignedNumber,
+    });
 
-        await prisma.warmingFlow.upsert({
-          where: { leadId: lead.id },
-          create: { id: require('crypto').randomUUID(), leadId: lead.id, step: 1, active: true },
-          update: { step: 1, active: true, optOut: false, updatedAt: new Date() },
-        });
-
-        // Avança de COLD para WARMING (respondeu = não é mais frio)
-        if (lead.stage === 'COLD') {
-          await prisma.lead.update({
-            where: { id: lead.id },
-            data: { stage: 'WARMING', updatedAt: new Date() },
-          });
-        }
-
-        return true;
-      } catch (err) {
-        log.error('Erro ao iniciar warming flow na resposta', err);
-        return false;
-      }
-    }
-    return false;
-  }
-
-  log.lead(`Warming flow step ${flow.step} — ${lead.phone}: "${message.slice(0, 50)}"`);
-
-  if (flow.step === 1) {
-    // Passo 1: esperando o nome
-    const analysis = await analyzeResponse(message, 'name_question');
-
-    if (analysis.type === 'name' && analysis.extractedName) {
-      // Salvou o nome — avança para WARMING
-      const name = analysis.extractedName;
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: { name, nameCollected: true, stage: 'WARMING', updatedAt: new Date() },
-      });
-
-      const reply = await generateWelcomeAfterName(name, lead);
-      await sendWarmingMessage(lead, reply);
-
-      // Encerra o fluxo
-      await prisma.warmingFlow.update({
-        where: { leadId: lead.id },
-        data: { active: false, updatedAt: new Date() },
-      });
-
-      log.ok(`Nome coletado via warming flow: "${name}" (${lead.phone})`);
-      return true;
-    }
-
-    if (analysis.type === 'negative') {
-      // Recusou dar o nome — pergunta sobre opt-in
-      const reply = await generateOptInQuestion(lead);
-      await sendWarmingMessage(lead, reply);
-
-      await prisma.warmingFlow.update({
-        where: { leadId: lead.id },
-        data: { step: 2, updatedAt: new Date() },
-      });
-      return true;
-    }
-
-    // Resposta unclear — também avança para opt-in (qualquer resposta = saiu do COLD)
     await prisma.lead.update({
       where: { id: lead.id },
-      data: { stage: 'WARMING', updatedAt: new Date() },
+      data: { tags: { push: 'opt-in-pending' }, updatedAt: new Date() },
     });
 
-    const reply = await generateOptInQuestion(lead);
-    await sendWarmingMessage(lead, reply);
-
-    await prisma.warmingFlow.update({
-      where: { leadId: lead.id },
-      data: { step: 2, updatedAt: new Date() },
-    });
-    return true;
+    log.ok(`Opt-in enviado para ${lead.name || lead.phone}: "${msg}"`);
+  } catch (err) {
+    log.error('Erro ao enviar opt-in', err);
   }
-
-  if (flow.step === 2) {
-    // Passo 2: esperando opt-in
-    const analysis = await analyzeResponse(message, 'optin_question');
-
-    if (analysis.type === 'positive') {
-      // Quer receber — avança para WARMING
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: { stage: 'WARMING', updatedAt: new Date() },
-      });
-
-      await prisma.warmingFlow.update({
-        where: { leadId: lead.id },
-        data: { active: false, updatedAt: new Date() },
-      });
-
-      log.ok(`Opt-in confirmado: ${lead.phone} → WARMING`);
-    } else if (analysis.type === 'negative') {
-      // Não quer — opt-out
-      const reply = await generateOptOutConfirmation();
-      await sendWarmingMessage(lead, reply);
-
-      await prisma.warmingFlow.update({
-        where: { leadId: lead.id },
-        data: { active: false, optOut: true, updatedAt: new Date() },
-      });
-
-      // Mantém COLD mas marca opt-out nas tags
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: {
-          tags: { push: 'opt-out' },
-          updatedAt: new Date(),
-        },
-      });
-
-      log.lead(`Opt-out: ${lead.phone} não quer receber mensagens`);
-    } else {
-      // Unclear — avança para WARMING mesmo assim (respondeu = não é COLD)
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: { stage: 'WARMING', updatedAt: new Date() },
-      });
-
-      await prisma.warmingFlow.update({
-        where: { leadId: lead.id },
-        data: { active: false, updatedAt: new Date() },
-      });
-    }
-
-    return true;
-  }
-
-  return false;
 }
 
 /**
- * Verifica se um lead tem opt-out (não quer receber mensagens).
+ * Processa a resposta de um poll de opt-in.
+ * Chamado pelo webhook quando o lead vota na enquete.
+ *
+ * Retorna true se a mensagem era uma resposta ao poll de opt-in.
  */
-export async function hasOptOut(leadId: string): Promise<boolean> {
-  const flow = await prisma.warmingFlow.findUnique({ where: { leadId } });
-  return flow?.optOut === true;
+export async function processOptInPollResponse(lead: Lead, message: string): Promise<boolean> {
+  // Só processa se o lead tem o poll pendente
+  if (!lead.tags.includes('opt-in-pending')) return false;
+
+  const lower = message.toLowerCase();
+  const isPositive = lower.includes('sim') || lower.includes('👍') || lower.includes('pode');
+  const isNegative = lower.includes('não') || lower.includes('nao') || lower.includes('👎') || lower.includes('obrigado');
+
+  if (!isPositive && !isNegative) return false;
+
+  // Remove a tag temporária
+  const newTags = lead.tags.filter((t) => t !== 'opt-in-pending');
+
+  if (isNegative) {
+    // Opt-out — adiciona tag e mantém COLD
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: {
+        tags: [...newTags, 'opt-out'],
+        updatedAt: new Date(),
+      },
+    });
+    log.lead(`Opt-out via poll: ${lead.name || lead.phone}`);
+  } else {
+    // Opt-in confirmado — avança para WARMING
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: {
+        tags: newTags,
+        stage: lead.stage === 'COLD' ? 'WARMING' : lead.stage,
+        updatedAt: new Date(),
+      },
+    });
+    log.ok(`Opt-in confirmado via poll: ${lead.name || lead.phone} → WARMING`);
+  }
+
+  return true;
 }

@@ -17,14 +17,16 @@ export default function CampaignDetail() {
   const qc = useQueryClient();
   const [showTestModal, setShowTestModal] = useState(false);
 
+  // Hook chamado no nível do componente — não dentro de callbacks
+  const pollingInterval = usePollingInterval(5000);
+
   const { data: campaign, isLoading } = useQuery({
     queryKey: ['campaign', id],
     queryFn: () => campaignsApi.get(id!).then((r) => r.data),
     enabled: !!id,
-    // Só faz polling quando campanha está rodando
     refetchInterval: (query) => {
       const status = (query.state.data as any)?.status;
-      return status === 'RUNNING' ? usePollingInterval(5000) : false;
+      return status === 'RUNNING' ? pollingInterval : false;
     },
   });
 
@@ -32,7 +34,7 @@ export default function CampaignDetail() {
     queryKey: ['campaign-stats', id],
     queryFn: () => campaignsApi.stats(id!).then((r) => r.data),
     enabled: !!id,
-    refetchInterval: campaign?.status === 'RUNNING' ? 5000 : false,
+    refetchInterval: campaign?.status === 'RUNNING' ? pollingInterval : false,
   });
 
   const dispatchMutation = useMutation({

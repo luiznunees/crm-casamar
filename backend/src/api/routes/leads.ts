@@ -18,6 +18,7 @@ const createLeadSchema = z.object({
   phone: z.string().min(10),
   email: z.string().email().optional(),
   source: z.string().min(1),
+  origin: z.string().optional(),
   stage: z.enum(['COLD', 'WARMING', 'WARM', 'HOT', 'INTERESTED']).optional(),
   assignedNumber: z.union([z.literal(1), z.literal(2)]),
   preferredContact: z.enum(['WHATSAPP', 'AUDIO', 'CALL']).optional(),
@@ -29,6 +30,7 @@ const updateLeadSchema = z.object({
   name: z.string().optional(),
   email: z.string().email().optional(),
   source: z.string().optional(),
+  origin: z.string().optional(),
   stage: z.enum(['COLD', 'WARMING', 'WARM', 'HOT', 'INTERESTED']).optional(),
   nameCollected: z.boolean().optional(),
   preferredContact: z.enum(['WHATSAPP', 'AUDIO', 'CALL']).optional(),
@@ -64,6 +66,18 @@ router.get('/stats', async (_req: Request, res: Response) => {
     res.json(stats);
   } catch (err) {
     res.status(500).json({ error: 'Erro ao buscar estatísticas' });
+  }
+});
+
+// GET /leads/origins — lista todas as origens distintas no banco
+router.get('/origins', async (_req: Request, res: Response) => {
+  try {
+    const rows = await (await import('../../prisma/client')).default.$queryRawUnsafe<{ origin: string }[]>(
+      `SELECT DISTINCT origin FROM "Lead" WHERE origin IS NOT NULL AND origin != '' ORDER BY origin ASC`
+    );
+    res.json(rows.map(r => r.origin));
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao buscar origens' });
   }
 });
 

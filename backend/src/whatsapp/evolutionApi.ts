@@ -222,3 +222,55 @@ export async function restartInstance(instanceNumber: number): Promise<boolean> 
     return false;
   }
 }
+
+// ── Poll (enquete) ────────────────────────────────────────────────────────────
+
+export async function sendPollMessage(
+  lead: Lead,
+  question: string,
+  options: string[],
+  selectableCount = 1
+): Promise<{ messageId: string }> {
+  const instance = getInstanceName(lead.assignedNumber);
+  const phone = normalizePhone(lead.phone);
+
+  const result = await evolutionRequest('POST', `/message/sendPoll/${instance}`, {
+    number: phone,
+    name: question,
+    selectableCount,
+    values: options,
+    delay: 1200,
+  }) as { key?: { id?: string } };
+
+  return { messageId: result?.key?.id || 'unknown' };
+}
+
+// ── List (menu interativo) ────────────────────────────────────────────────────
+// Aparece como um botão "Ver opções" que abre uma lista de itens selecionáveis.
+
+export async function sendListMessage(
+  lead: Lead,
+  title: string,
+  description: string,
+  buttonText: string,
+  sections: Array<{
+    title: string;
+    rows: Array<{ title: string; description?: string; rowId: string }>;
+  }>,
+  footerText = ''
+): Promise<{ messageId: string }> {
+  const instance = getInstanceName(lead.assignedNumber);
+  const phone = normalizePhone(lead.phone);
+
+  const result = await evolutionRequest('POST', `/message/sendList/${instance}`, {
+    number: phone,
+    title,
+    description,
+    buttonText,
+    footerText,
+    sections,   // a API real usa "sections", não "values"
+    delay: 1200,
+  }) as { key?: { id?: string } };
+
+  return { messageId: result?.key?.id || 'unknown' };
+}

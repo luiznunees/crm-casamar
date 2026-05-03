@@ -20,17 +20,52 @@ const mediaAttachmentSchema = z.object({
   fileName: z.string().optional(),
 });
 
+const stepSchema = z.object({
+  id: z.string(),
+  type: z.enum(['text', 'image', 'audio', 'video', 'document', 'poll', 'delay']),
+  delayAfter: z.number().min(0).default(0),
+  // text
+  content: z.string().optional(),
+  useAI: z.boolean().optional(),
+  // image/video
+  base64: z.string().optional(),
+  mimetype: z.string().optional(),
+  caption: z.string().optional(),
+  // document
+  fileName: z.string().optional(),
+  // poll
+  question: z.string().optional(),
+  optionYes: z.string().optional(),
+  optionNo: z.string().optional(),
+  tagOnYes: z.string().optional(),
+  // delay
+  seconds: z.number().optional(),
+});
+
 const createCampaignSchema = z.object({
   name: z.string().min(1),
   targetStages: z.array(z.enum(['COLD', 'WARMING', 'WARM', 'HOT', 'INTERESTED'])).min(1),
-  targetSources: z.array(z.string()),
-  messageTemplate: z.string().min(10),
+  targetSources: z.array(z.string()).default([]),
+  targetOrigins: z.array(z.string()).optional(),
+  targetTags: z.array(z.string()).optional(),
+  targetTagsMatchAll: z.boolean().optional(),
+  targetPreferredContact: z.array(z.string()).optional(),
+  messageTemplate: z.string().optional(),
+  steps: z.array(stepSchema).optional(),
   scheduledAt: z.string().datetime().optional(),
   mediaAttachments: z.array(mediaAttachmentSchema).optional(),
-  sendWindowStart: z.string().regex(/^\d{2}:\d{2}$/).optional(), // "09:00"
-  sendWindowEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),   // "18:00"
-  sendWindowDays: z.array(z.number().min(0).max(6)).optional(),  // [1,2,3,4,5]
-});
+  sendWindowStart: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  sendWindowEnd: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  sendWindowDays: z.array(z.number().min(0).max(6)).optional(),
+  pollEnabled: z.boolean().optional(),
+  pollQuestion: z.string().optional(),
+  pollOptionYes: z.string().optional(),
+  pollOptionNo: z.string().optional(),
+  pollTagOnYes: z.string().optional(),
+}).refine(
+  (d) => (d.steps && d.steps.length > 0) || (d.messageTemplate && d.messageTemplate.length > 0),
+  { message: 'Defina pelo menos um step ou uma mensagem' }
+);
 
 // GET /campaigns
 router.get('/', async (_req: Request, res: Response) => {

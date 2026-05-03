@@ -56,89 +56,79 @@ Responda APENAS com o texto da mensagem, sem aspas.`;
 }
 
 /**
- * Fluxo 2: Mensagem de campanha em blocos separados.
- * BLOQUEIA se o lead não tiver nome coletado.
+ * Fluxo 2: Mensagem de campanha.
+ * Você escreve a mensagem base — a IA reescreve com variação de palavras
+ * para cada lead (anti-fingerprint), mantendo o mesmo significado e tamanho.
  */
 export async function generateCampaignMessage(
   lead: LeadWithMessages,
   campaignTemplate: string
 ): Promise<string[]> {
-  // Se não tem nome, gera mensagem sem usar o nome (não bloqueia mais)
-  const hasName = lead.name && lead.nameCollected;
+  const hasName = !!(lead.name && lead.nameCollected);
+  const firstName = hasName
+    ? capitalize(lead.name!.split(' ')[0])
+    : null;
 
+function capitalize(str: string): string {
+  if (!str) return str;
+  return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+}
   const config = await getAIConfig();
   const seed = Date.now();
 
-  const recentMessages = (lead.messages || [])
-    .sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime())
-    .slice(0, 5)
-    .reverse()
-    .map((m) => `[${m.direction === 'SENT' ? config.personaName : 'Lead'}]: ${m.content}`)
-    .join('\n');
-
-  const configuredRules: string[] = [];
-  if (config.globalRules) configuredRules.push(`REGRAS OBRIGATÓRIAS:\n${config.globalRules}`);
-  if (config.toneInstructions) configuredRules.push(`TOM E ESTILO:\n${config.toneInstructions}`);
-  if (config.mustInclude?.length) configuredRules.push(`ELEMENTOS OBRIGATÓRIOS:\n- ${config.mustInclude.join('\n- ')}`);
-  if (config.forbiddenWords?.length) configuredRules.push(`PALAVRAS PROIBIDAS: ${config.forbiddenWords.join(', ')}`);
-
-  // Instrução de blocos
   const blocksInstruction = config.splitMessages
-    ? `FORMATO OBRIGATÓRIO — MENSAGENS EM BLOCOS:
-A mensagem deve ser dividida em ${config.signatureTemplate ? '4' : '3'} blocos curtos separados por uma linha contendo apenas "---".
-Estrutura obrigatória:
-BLOCO 1: Saudação curta e casual (1 linha). Ex: "Oi ${lead.name}, bom dia! 😊"
-BLOCO 2: Contexto / gancho principal (1-2 linhas). O que você quer comunicar.
-BLOCO 3: Detalhe ou CTA (1-2 linhas). Convite, pergunta ou próximo passo.${config.signatureTemplate ? `\nBLOCO 4: Apenas a assinatura: "${config.signatureTemplate}"` : ''}
+    ? `FORMATO DE SAÍDA — OBRIGATÓRIO:
+Separe cada frase/ideia com "---" em linha isolada.
+Exemplo do formato correto:
 
-Exemplo de formato:
-Oi ${lead.name}, tudo bem?
+Oi João!
 ---
-Vi que você tem interesse no ${lead.source} e queria te contar sobre as condições especiais dessa semana.
+Estou montando uma lista VIP com oportunidades no litoral.
 ---
-Posso te passar mais detalhes? É rapidinho 😊${config.signatureTemplate ? `\n---\n${config.signatureTemplate}` : ''}
+Quer fazer parte?
 
-IMPORTANTE: use exatamente "---" em uma linha separada para dividir os blocos. Nada mais.`
-    : `Escreva a mensagem em um único bloco corrido.${config.signatureTemplate ? ` Termine com a assinatura: "${config.signatureTemplate}"` : ''}`;
+NÃO envie tudo junto. Cada "---" vira uma mensagem separada no WhatsApp.`
+    : `Mensagem em bloco único, sem separadores.`;
 
-  const systemPrompt = `Você é ${config.personaName}, ${config.personaRole} da ${config.companyName}.
+  const systemPrompt = `Você é um assistente que reescreve mensagens de WhatsApp.
 
-LEAD:
-- Nome: ${hasName ? lead.name : 'Desconhecido (não temos o nome ainda)'}
-- Empreendimento: ${lead.source}
-- Stage: ${lead.stage}
-- Contato preferido: ${lead.preferredContact}
-${lead.observations ? `- Observações: ${lead.observations}` : ''}
-${lead.tags.length > 0 ? `- Tags: ${lead.tags.join(', ')}` : ''}
+TAREFA: Reescreva a mensagem abaixo mantendo:
+- O mesmo significado e intenção
+- O mesmo tamanho aproximado (não expanda)
+- Tom casual de WhatsApp
+- Português brasileiro correto e natural
 
-HISTÓRICO RECENTE:
-${recentMessages || 'Nenhuma mensagem anterior.'}
+O QUE VOCÊ PODE FAZER:
+- Trocar palavras por sinônimos naturais
+- Mudar a ordem das frases
+- Variar expressões ("Posso te incluir?" → "Quer fazer parte?" → "Te coloco na lista?")
+- Ajustar pontuação e emojis levemente
+${hasName
+  ? `- Inserir o nome "${firstName}" na saudação de forma natural`
+  : `- Usar saudação genérica ("Oi!", "Olá!") — não temos o nome`}
 
-INSTRUÇÃO DA CAMPANHA:
-${campaignTemplate}
-
-${configuredRules.join('\n\n')}
+O QUE VOCÊ NÃO PODE FAZER:
+- Adicionar informações que não estão na mensagem original
+- Inventar dados, preços, locais ou detalhes
+- Aumentar o tamanho significativamente
+- Errar gramática — "Aqui é o Luis Jr" ✅, "Estou Luis Jr" ❌, "Sou Luis Jr" ✅
+- Usar o nome completo — use apenas o primeiro nome: "${firstName || 'nome'}"
+- Usar construções estranhas em português
+${config.forbiddenWords?.length ? `- Usar: ${config.forbiddenWords.join(', ')}` : ''}
 
 ${blocksInstruction}
 
-REGRAS ABSOLUTAS:
-${hasName
-  ? `1. O BLOCO 1 DEVE começar com o nome: "Oi ${lead.name}" ou "Olá ${lead.name}"`
-  : `1. NÃO temos o nome desta pessoa. Comece com uma saudação genérica: "Oi!", "Olá!", "Bom dia!" — NUNCA invente um nome`}
-2. Tom de WhatsApp — natural, humano, nunca robótico
-3. Não mencione que é IA ou sistema automatizado
-4. Seed de variação: ${seed} — gere algo único e diferente
-
-Responda APENAS com os blocos no formato especificado.`;
+Seed de variação: ${seed} — cada lead recebe uma versão diferente.
+Responda APENAS com a mensagem reescrita, em português correto.`;
 
   const completion = await groq.chat.completions.create({
     model: MODEL,
     messages: [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: `Gere a mensagem para ${hasName ? lead.name : 'este contato'}. Seed: ${seed}` },
+      { role: 'user', content: campaignTemplate },
     ],
-    temperature: 1.0,
-    max_tokens: Math.ceil((config.maxLength || 300) * 2),
+    temperature: 0.7, // variação suficiente sem comprometer a gramática
+    max_tokens: 300,
   });
 
   const raw = completion.choices[0]?.message?.content?.trim();

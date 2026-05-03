@@ -16,6 +16,7 @@ export interface LeadImportRow {
   name?: string;
   email?: string;
   observations?: string;
+  city?: string; // cidade — vai para observações
 }
 
 // ── Phone extraction ──────────────────────────────────────────────────────────
@@ -86,10 +87,10 @@ export function parseCSV(content: string): LeadImportRow[] {
     name: headers.findIndex((h) => ['name', 'nome'].includes(h)),
     email: headers.findIndex((h) => ['email', 'e-mail'].includes(h)),
     observations: headers.findIndex((h) => ['observations', 'observacoes', 'observações', 'obs', 'notas'].includes(h)),
+    city: headers.findIndex((h) => ['cidade', 'city', 'municipio', 'município'].includes(h)),
   };
 
   if (colIndex.phone === -1) {
-    // Tenta usar a primeira coluna como telefone
     colIndex.phone = 0;
   }
 
@@ -102,11 +103,14 @@ export function parseCSV(content: string): LeadImportRow[] {
 
     if (!phone || !isValidBrazilianPhone(phone)) continue;
 
+    const city = colIndex.city >= 0 ? cols[colIndex.city] || undefined : undefined;
+
     rows.push({
       phone,
       name: colIndex.name >= 0 ? cols[colIndex.name] || undefined : undefined,
       email: colIndex.email >= 0 ? cols[colIndex.email] || undefined : undefined,
       observations: colIndex.observations >= 0 ? cols[colIndex.observations] || undefined : undefined,
+      city,
     });
   }
 
@@ -119,7 +123,8 @@ export async function importLeads(
   rows: LeadImportRow[],
   options: {
     source: string;
-    assignedNumber?: 1 | 2; // ignorado — sempre intercala automaticamente
+    origin?: string;
+    assignedNumber?: 1 | 2;
     stage?: Stage;
     tags?: string[];
   }
@@ -132,7 +137,6 @@ export async function importLeads(
     leads: [],
   };
 
-  // Intercala chip 1 e 2 automaticamente
   let chipToggle: 1 | 2 = 1;
 
   for (const row of rows) {
@@ -150,23 +154,28 @@ export async function importLeads(
     }
 
     try {
+      // Monta observações incluindo cidade se disponível
+      const obs = [
+        row.city ? `Cidade: ${row.city}` : null,
+        row.observations || null,
+      ].filter(Boolean).join(' | ') || null;
+
       const lead = await prisma.lead.create({
         data: {
           phone: row.phone,
           name: row.name || null,
           email: row.email || null,
           source: options.source,
+          origin: options.origin || 'Orgânico',
           stage: options.stage || 'COLD',
           nameCollected: !!row.name,
-          assignedNumber: chipToggle, // intercala 1, 2, 1, 2...
-          observations: row.observations || null,
+          assignedNumber: chipToggle,
+          observations: obs,
           tags: options.tags || [],
         },
       });
 
-      // Avança o toggle para o próximo lead
       chipToggle = chipToggle === 1 ? 2 : 1;
-
       await autoEnrollLead(lead.id).catch(() => {});
 
       result.imported++;
@@ -178,7 +187,7 @@ export async function importLeads(
     }
   }
 
-  log.ok(`Importação: ${result.imported} importados (chip 1: ~${Math.ceil(result.imported/2)}, chip 2: ~${Math.floor(result.imported/2)}), ${result.duplicates} duplicados, ${result.invalid} inválidos`);
+  log.ok(`Importação: ${result.imported} importados, ${result.duplicates} duplicados, ${result.invalid} inválidos`);
   return result;
 }
 

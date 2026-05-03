@@ -1,14 +1,26 @@
 import prisma from '../prisma/client';
 import { MessageDirection, MessageType } from '@prisma/client';
-import { sendTextMessage, sendTyping, sendAudioMessage, sendImageMessage, sendVideoMessage, sendDocumentMessage } from '../whatsapp/evolutionApi';
-import { generateNameRequestMessage, generateCampaignMessage } from '../ai/messageGenerator';
+import {
+  sendTextMessage,
+  sendTyping,
+  sendAudioMessage,
+  sendImageMessage,
+  sendVideoMessage,
+  sendDocumentMessage,
+  sendPollMessage,
+} from '../whatsapp/evolutionApi';
+import { generateCampaignMessage } from '../ai/messageGenerator';
 import { qualifyLead, detectBuyingIntent } from '../ai/leadQualifier';
 import { getLeadById } from './leadService';
 import { getAIConfig } from './aiConfigService';
 import { stopLeadFollowUp } from './followUpService';
 import { sendAutoReplyIfNeeded } from './autoReplyService';
-import { processWarmingResponse } from './warmingFlowService';
+import { tryCollectName, advanceFromCold } from './warmingFlowService';
+import { injectUnicodeNoise, addAudioNoise, addImageNoise, shortHash } from '../utils/fingerprintEvasion';
+import type { CampaignStep, TextStep, ImageStep, AudioStep, VideoStep, DocumentStep, PollStep } from '../types/campaignStep';
 import { log } from '../utils/logger';
+
+// ── Persistência ──────────────────────────────────────────────────────────────
 
 export async function saveMessage(data: {
   leadId: string;
@@ -36,6 +48,8 @@ export async function getMessagesByLead(leadId: string, limit = 50) {
   });
 }
 
+// ── Helpers de envio ──────────────────────────────────────────────────────────
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -48,58 +62,34 @@ async function sendBlocks(
   const delayMs = (config.blockDelaySeconds ?? 3) * 1000;
 
   for (let i = 0; i < blocks.length; i++) {
-    // Delay entre blocos (não antes do primeiro)
     if (i > 0) await sleep(delayMs);
 
-    const block = blocks[i];
+    const rawBlock = blocks[i];
 
-    // Mostra "digitando..." proporcional ao tamanho do bloco
+    // ── Unicode noise: cada bloco tem caracteres invisíveis únicos ──────────
+    const block = injectUnicodeNoise(rawBlock, (lead as any).id + i);
+
     await sendTyping(lead as any, block.length);
-
-    // Envia a mensagem
     await sendTextMessage(lead as any, block);
 
+    // Salva o texto limpo (sem os invisíveis) para o histórico
     await saveMessage({
       leadId: lead!.id,
       direction: 'SENT',
-      content: block,
+      content: rawBlock,
       type: 'TEXT',
       fromNumber: lead!.assignedNumber,
     });
 
-    log.msgSent(`[chip ${lead!.assignedNumber}] → ${lead!.phone} | bloco ${i + 1}/${blocks.length}: "${block.slice(0, 60)}${block.length > 60 ? '…' : ''}"`);
+    log.msgSent(
+      `[chip ${lead!.assignedNumber}] → ${(lead as any).phone} | bloco ${i + 1}/${blocks.length}: "${rawBlock.slice(0, 60)}${rawBlock.length > 60 ? '…' : ''}"`
+    );
   }
 
   await prisma.lead.update({
     where: { id: lead!.id },
     data: { lastMessageAt: new Date() },
   });
-}
-
-export async function sendNameRequestMessage(leadId: string): Promise<void> {
-  const lead = await getLeadById(leadId);
-  if (!lead) throw new Error(`Lead ${leadId} não encontrado`);
-
-  if (lead.firstMessageSent) {
-    log.skip(`Lead ${lead.name || lead.phone} já recebeu mensagem de coleta de nome`);
-    return;
-  }
-
-  if (lead.name && lead.nameCollected) {
-    log.skip(`Lead ${lead.name} já tem nome coletado`);
-    return;
-  }
-
-  log.ai(`Gerando mensagem de coleta de nome para ${lead.phone}`);
-  const blocks = await generateNameRequestMessage(lead);
-  await sendBlocks(lead, blocks);
-
-  await prisma.lead.update({
-    where: { id: leadId },
-    data: { firstMessageSent: true },
-  });
-
-  log.ok(`Coleta de nome enviada para ${lead.phone} (${blocks.length} bloco(s))`);
 }
 
 export interface MediaAttachment {
@@ -120,17 +110,31 @@ async function sendMediaAttachments(
   for (const att of attachments) {
     await sleep(delayMs);
 
+    // ── Fingerprint evasion: hash único por lead em cada mídia ──────────────
+    let noisyBase64 = att.base64;
+    const originalHash = shortHash(att.base64);
+
+    if (att.type === 'audio') {
+      noisyBase64 = addAudioNoise(att.base64, att.mimetype);
+    } else if (att.type === 'image' || att.type === 'video') {
+      noisyBase64 = addImageNoise(att.base64, att.mimetype);
+    }
+
+    const noisyHash = shortHash(noisyBase64);
+    log.ok(`[fingerprint] ${att.type} | original: ${originalHash} → noisy: ${noisyHash}`);
+
     switch (att.type) {
       case 'audio':
-        await sendAudioMessage(lead as any, att.base64, att.mimetype);
+        await sendAudioMessage(lead as any, noisyBase64, att.mimetype);
         break;
       case 'image':
-        await sendImageMessage(lead as any, att.base64, att.caption || '', att.mimetype);
+        await sendImageMessage(lead as any, noisyBase64, att.caption || '', att.mimetype);
         break;
       case 'video':
-        await sendVideoMessage(lead as any, att.base64, att.caption || '', att.mimetype);
+        await sendVideoMessage(lead as any, noisyBase64, att.caption || '', att.mimetype);
         break;
       case 'document':
+        // Documentos não recebem ruído — alteração pode corromper o arquivo
         await sendDocumentMessage(lead as any, att.base64, att.fileName || 'arquivo', att.mimetype);
         break;
     }
@@ -154,25 +158,72 @@ async function sendMediaAttachments(
   }
 }
 
+// ── Envio de campanha ─────────────────────────────────────────────────────────
+
+export interface CampaignPoll {
+  question: string;
+  optionYes: string;
+  optionNo: string;
+  tagOnYes: string; // tag a aplicar em quem vota sim
+}
+
 export async function sendCampaignMessageToLead(
   leadId: string,
   campaignTemplate: string,
-  mediaAttachments: MediaAttachment[] = []
+  mediaAttachments: MediaAttachment[] = [],
+  poll?: CampaignPoll
 ): Promise<{ success: boolean; skipped?: boolean; reason?: string }> {
   const lead = await getLeadById(leadId);
   if (!lead) return { success: false, reason: 'Lead não encontrado' };
 
   try {
-    // Gera mensagem — se não tem nome, a IA gera sem usar o nome
+    const config = await getAIConfig();
+    const delayMs = (config.blockDelaySeconds ?? 3) * 1000;
+
+    // 1. Envia mídias primeiro (foto, vídeo, etc.)
+    if (mediaAttachments.length > 0) {
+      await sendMediaAttachments(lead, mediaAttachments);
+      await sleep(delayMs);
+    }
+
+    // 2. Envia a mensagem de texto (variada pela IA)
     log.ai(`Gerando mensagem de campanha para ${lead.name || lead.phone}`);
     const blocks = await generateCampaignMessage(lead, campaignTemplate);
     await sendBlocks(lead, blocks);
 
-    if (mediaAttachments.length > 0) {
-      await sendMediaAttachments(lead, mediaAttachments);
+    // 3. Envia enquete (se configurada)
+    if (poll?.question) {
+      // Delay maior antes da enquete — evita o "aguardando mensagem" da Evolution API
+      const pollDelay = Math.max(delayMs, 5000) + 3000; // mínimo 8s após o último bloco
+      await sleep(pollDelay);
+
+      // Mostra "digitando..." antes da enquete para parecer humano
+      await sendTyping(lead as any, poll.question.length);
+
+      await sendPollMessage(lead, poll.question, [poll.optionYes, poll.optionNo], 1);
+
+      // Marca que este lead tem uma enquete pendente com a tag configurada
+      if (poll.tagOnYes) {
+        const pendingTag = `poll-pending:${poll.tagOnYes}`;
+        if (!lead.tags.includes(pendingTag)) {
+          await prisma.lead.update({
+            where: { id: leadId },
+            data: { tags: { push: pendingTag }, updatedAt: new Date() },
+          });
+        }
+      }
+
+      await saveMessage({
+        leadId: lead.id,
+        direction: 'SENT',
+        content: `[Enquete] ${poll.question}`,
+        type: 'TEXT',
+        fromNumber: lead.assignedNumber,
+      });
+
+      log.ok(`Enquete enviada para ${lead.name || lead.phone}: "${poll.question}"`);
     }
 
-    // Marca que já enviou a primeira mensagem (para o warming flow saber)
     if (!lead.firstMessageSent) {
       await prisma.lead.update({
         where: { id: leadId },
@@ -180,7 +231,7 @@ export async function sendCampaignMessageToLead(
       });
     }
 
-    log.ok(`Campanha enviada para ${lead.name || lead.phone} — ${blocks.length} bloco(s)`);
+    log.ok(`Campanha enviada para ${lead.name || lead.phone} — ${blocks.length} bloco(s)${poll?.question ? ' + enquete' : ''}`);
     return { success: true };
   } catch (err) {
     const reason = err instanceof Error ? err.message : 'Erro desconhecido';
@@ -188,6 +239,8 @@ export async function sendCampaignMessageToLead(
     return { success: false, reason };
   }
 }
+
+// ── Processamento de mensagem recebida ────────────────────────────────────────
 
 export async function processIncomingMessage(data: {
   phone: string;
@@ -197,12 +250,13 @@ export async function processIncomingMessage(data: {
 }): Promise<void> {
   const { phone, content, type, instanceNumber } = data;
 
+  // Busca o lead tentando variantes do número
   const variants = buildPhoneVariants(phone);
   let lead = null;
   for (const variant of variants) {
     lead = await prisma.lead.findUnique({
       where: { phone: variant },
-      include: { messages: { orderBy: { sentAt: 'desc' }, take: 5 } },
+      include: { messages: { orderBy: { sentAt: 'desc' }, take: 20 } },
     });
     if (lead) break;
   }
@@ -212,6 +266,7 @@ export async function processIncomingMessage(data: {
     return;
   }
 
+  // Salva a mensagem recebida
   await saveMessage({
     leadId: lead.id,
     direction: 'RECEIVED',
@@ -225,58 +280,74 @@ export async function processIncomingMessage(data: {
     data: {
       unreadCount: { increment: 1 },
       lastMessageAt: new Date(),
+      engagementScore: { increment: 1 }, // cada resposta aumenta o score — leads engajados vão na frente nas campanhas
     },
   });
 
-  log.msgRecv(`[chip ${instanceNumber}] ← ${lead.name || lead.phone}: "${content.slice(0, 80)}${content.length > 80 ? '…' : ''}"`);
+  log.msgRecv(
+    `[chip ${instanceNumber}] ← ${lead.name || lead.phone}: "${content.slice(0, 80)}${content.length > 80 ? '…' : ''}"`
+  );
 
-  // Lead respondeu → para o follow-up automático
+  // Para follow-ups automáticos — lead respondeu
   await stopLeadFollowUp(lead.id);
 
-  // Auto-reply fora do horário
+  // Auto-reply fora do horário de atendimento
   await sendAutoReplyIfNeeded(lead);
 
-  // Processa fluxo de aquecimento (lead sem nome, COLD)
-  // Se o fluxo processar a resposta, não executa as outras lógicas de nome
-  const handledByWarmingFlow = await processWarmingResponse(lead, content).catch(() => false);
-
-  if (!handledByWarmingFlow) {
-    // Tenta extrair nome se COLD sem nome (fallback do fluxo antigo)
-    if (!lead.nameCollected && lead.firstMessageSent && type === 'TEXT') {
-      const extractedName = extractNameFromMessage(content);
-      if (extractedName) {
-        await prisma.lead.update({
-          where: { id: lead.id },
-          data: { name: extractedName, nameCollected: true, stage: 'WARMING', updatedAt: new Date() },
-        });
-        log.lead(`Nome coletado: "${extractedName}" (${lead.phone})`);
-      }
-    }
+  // ── Coleta passiva de nome ────────────────────────────────────────────────
+  if (!lead.nameCollected && type === 'TEXT') {
+    await tryCollectName(lead, content);
   }
 
-  // Detecção de intenção de compra (rápida, sem IA)
-  const allMessages = [...(lead.messages || []), {
-    id: 'new', leadId: lead.id, direction: 'RECEIVED' as MessageDirection,
-    content, type, fromNumber: instanceNumber, sentAt: new Date(),
-  }];
+  // ── Avança de COLD para WARMING ───────────────────────────────────────────
+  await advanceFromCold(lead);
+
+  // ── Detecção de intenção de compra (rápida, sem IA) ───────────────────────
+  const allMessages = [
+    ...(lead.messages || []),
+    {
+      id: 'new',
+      leadId: lead.id,
+      direction: 'RECEIVED' as MessageDirection,
+      content,
+      type,
+      fromNumber: instanceNumber,
+      sentAt: new Date(),
+    },
+  ];
+
   const intent = detectBuyingIntent(allMessages as any);
   if (intent.detected) {
     log.lead(`🎯 Intenção: ${intent.type} | "${intent.keyword}" | ${lead.name || lead.phone}`);
+
     const stageMap: Record<string, string> = {
-      ready_to_buy: 'INTERESTED', price_inquiry: 'WARM',
-      visit_request: 'HOT', financing: 'WARM', urgency: 'HOT',
+      ready_to_buy: 'INTERESTED',
+      price_inquiry: 'WARM',
+      visit_request: 'HOT',
+      financing: 'WARM',
+      urgency: 'HOT',
     };
     const stageOrder = ['COLD', 'WARMING', 'WARM', 'HOT', 'INTERESTED'];
     const newStage = stageMap[intent.type || ''];
+
     if (newStage && stageOrder.indexOf(newStage) > stageOrder.indexOf(lead.stage)) {
-      await prisma.lead.update({ where: { id: lead.id }, data: { stage: newStage as any, updatedAt: new Date() } });
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { stage: newStage as any, updatedAt: new Date() },
+      });
       log.lead(`Stage: ${lead.stage} → ${newStage} (${lead.name || lead.phone})`);
     }
   }
 
-  // Qualificação completa com IA a cada 3 mensagens recebidas
-  const receivedCount = (lead.messages || []).filter((m) => m.direction === 'RECEIVED').length;
-  if (receivedCount >= 2 && receivedCount % 3 === 0) {
+  // ── Qualificação completa com IA ──────────────────────────────────────────
+  // Conta mensagens recebidas no banco (não só as carregadas em memória)
+  // para evitar o bug de contar apenas as últimas 20.
+  const totalReceived = await prisma.message.count({
+    where: { leadId: lead.id, direction: 'RECEIVED' },
+  });
+
+  // Roda a cada 3 mensagens recebidas (1ª, 4ª, 7ª, ...)
+  if (totalReceived % 3 === 1) {
     setImmediate(async () => {
       try {
         const freshLead = await prisma.lead.findUnique({
@@ -284,41 +355,41 @@ export async function processIncomingMessage(data: {
           include: { messages: { orderBy: { sentAt: 'desc' }, take: 15 } },
         });
         if (!freshLead) return;
+
         const qualification = await qualifyLead(freshLead as any);
         if (qualification.suggestedStage && qualification.confidence >= 70) {
           const stageOrder = ['COLD', 'WARMING', 'WARM', 'HOT', 'INTERESTED'];
           const updates: any = {};
-          if (stageOrder.indexOf(qualification.suggestedStage) > stageOrder.indexOf(freshLead.stage)) {
+
+          if (
+            stageOrder.indexOf(qualification.suggestedStage) >
+            stageOrder.indexOf(freshLead.stage)
+          ) {
             updates.stage = qualification.suggestedStage;
           }
+
           if (qualification.extractedTags.length > 0) {
             updates.tags = [...new Set([...freshLead.tags, ...qualification.extractedTags])];
           }
+
           if (Object.keys(updates).length > 0) {
-            await prisma.lead.update({ where: { id: lead.id }, data: { ...updates, updatedAt: new Date() } });
-            log.lead(`IA qualificou ${freshLead.name || freshLead.phone}: ${qualification.suggestedStage} | ${qualification.extractedTags.join(', ')}`);
+            await prisma.lead.update({
+              where: { id: lead.id },
+              data: { ...updates, updatedAt: new Date() },
+            });
+            log.lead(
+              `IA qualificou ${freshLead.name || freshLead.phone}: ${qualification.suggestedStage} (${qualification.confidence}%) | tags: ${qualification.extractedTags.join(', ') || 'nenhuma'}`
+            );
           }
         }
-      } catch (err) { log.error('Erro na qualificação IA', err); }
+      } catch (err) {
+        log.error('Erro na qualificação IA', err);
+      }
     });
   }
 }
 
-function extractNameFromMessage(content: string): string | null {
-  const cleaned = content.trim();
-  if (cleaned.length > 60) return null;
-
-  const patterns = [
-    /^(?:me chamo|meu nome é|sou o|sou a|pode me chamar de|pode chamar de)\s+([A-ZÀ-Ú][a-zà-ú]+(?:\s+[A-ZÀ-Ú][a-zà-ú]+)*)/i,
-    /^([A-ZÀ-Ú][a-zà-ú]+(?:\s+[A-ZÀ-Ú][a-zà-ú]+)*)$/,
-  ];
-
-  for (const pattern of patterns) {
-    const match = cleaned.match(pattern);
-    if (match?.[1]?.trim().length >= 2) return match[1].trim();
-  }
-  return null;
-}
+// ── Utilitários de telefone ───────────────────────────────────────────────────
 
 function buildPhoneVariants(phone: string): string[] {
   const digits = phone.replace(/\D/g, '');

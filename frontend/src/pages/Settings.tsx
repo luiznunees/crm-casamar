@@ -1,9 +1,156 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Plus, X, Save, BarChart2, MessageSquare, Clock, Zap } from 'lucide-react';
-import { settingsApi, type QuickReply, type WeeklyReport } from '../api/client';
+import { Plus, X, Save, BarChart2, MessageSquare, Clock, Tag } from 'lucide-react';
+import { settingsApi, tagsApi, type QuickReply, type WeeklyReport, type Tag as TagType } from '../api/client';
 import { STAGE_LABELS } from '../constants';
 import type { Stage } from '../api/client';
+
+// ── Tags tab ──────────────────────────────────────────────────────────────────
+
+const TAG_PALETTE = [
+  '#6366f1','#8b5cf6','#ec4899','#f43f5e','#f97316',
+  '#f59e0b','#10b981','#14b8a6','#06b6d4','#3b82f6',
+  '#64748b','#84cc16',
+];
+
+function TagsTab() {
+  const qc = useQueryClient();
+  const [name, setName] = useState('');
+  const [color, setColor] = useState('#6366f1');
+  const [description, setDescription] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editColor, setEditColor] = useState('');
+  const [error, setError] = useState('');
+
+  const { data: tags = [], isLoading } = useQuery({
+    queryKey: ['tags'],
+    queryFn: () => tagsApi.list().then(r => r.data),
+  });
+
+  const createMutation = useMutation({
+    mutationFn: () => tagsApi.create({ name, color, description }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tags'] });
+      setName(''); setDescription(''); setColor('#6366f1'); setError('');
+    },
+    onError: (err: any) => setError(err?.response?.data?.error || 'Erro ao criar tag'),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: any }) => tagsApi.update(id, data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['tags'] }); setEditingId(null); },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => tagsApi.delete(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tags'] }),
+  });
+
+  return (
+    <div>
+      <h3 style={{ fontWeight: 600, marginBottom: 4 }}>Etiquetas (Tags)</h3>
+      <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 20 }}>
+        Crie etiquetas universais para segmentar leads em campanhas. Você pode combinar múltiplas tags com filtro AND ou OR.
+      </p>
+
+      {/* Criar nova tag */}
+      <div className="card" style={{ marginBottom: 20 }}>
+        <h4 style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>Nova Etiqueta</h4>
+        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div className="form-group" style={{ marginBottom: 0, flex: '1 1 160px' }}>
+            <label className="form-label">Nome *</label>
+            <input className="form-input" placeholder="Ex: beira lago" value={name}
+              onChange={e => setName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && name.trim() && createMutation.mutate()} />
+          </div>
+          <div className="form-group" style={{ marginBottom: 0, flex: '1 1 200px' }}>
+            <label className="form-label">Descrição (opcional)</label>
+            <input className="form-input" placeholder="Ex: Unidades com vista para o lago" value={description}
+              onChange={e => setDescription(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label">Cor</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', maxWidth: 200 }}>
+              {TAG_PALETTE.map(c => (
+                <button key={c} onClick={() => setColor(c)}
+                  style={{ width: 22, height: 22, borderRadius: '50%', background: c, border: color === c ? '3px solid white' : '2px solid transparent', cursor: 'pointer', outline: color === c ? `2px solid ${c}` : 'none' }} />
+              ))}
+            </div>
+          </div>
+          <button className="btn btn-primary" style={{ marginBottom: 0 }}
+            onClick={() => createMutation.mutate()}
+            disabled={!name.trim() || createMutation.isPending}>
+            <Plus size={14} /> {createMutation.isPending ? 'Criando...' : 'Criar'}
+          </button>
+        </div>
+        {error && <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 8 }}>{error}</div>}
+        {/* Preview */}
+        {name.trim() && (
+          <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Preview:</span>
+            <span style={{ background: `${color}22`, color, border: `1px solid ${color}66`, borderRadius: 6, padding: '3px 10px', fontSize: 13, fontWeight: 600 }}>
+              {name.trim()}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Lista de tags */}
+      {isLoading ? <div className="loading">Carregando...</div> : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {(tags as TagType[]).length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">🏷️</div>
+              <div className="empty-state-text">Nenhuma etiqueta criada</div>
+            </div>
+          ) : (tags as TagType[]).map(tag => (
+            <div key={tag.id} className="card" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
+              {editingId === tag.id ? (
+                <>
+                  <input className="form-input" style={{ flex: 1, fontSize: 13 }} value={editName}
+                    onChange={e => setEditName(e.target.value)} />
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    {TAG_PALETTE.map(c => (
+                      <button key={c} onClick={() => setEditColor(c)}
+                        style={{ width: 18, height: 18, borderRadius: '50%', background: c, border: editColor === c ? '2px solid white' : '1px solid transparent', cursor: 'pointer' }} />
+                    ))}
+                  </div>
+                  <button className="btn btn-primary" style={{ fontSize: 12, padding: '4px 10px' }}
+                    onClick={() => updateMutation.mutate({ id: tag.id, data: { name: editName, color: editColor } })}>
+                    Salvar
+                  </button>
+                  <button className="btn btn-ghost" style={{ fontSize: 12, padding: '4px 8px' }} onClick={() => setEditingId(null)}>
+                    Cancelar
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span style={{ background: `${tag.color}22`, color: tag.color, border: `1px solid ${tag.color}66`, borderRadius: 6, padding: '3px 10px', fontSize: 13, fontWeight: 600, minWidth: 80, textAlign: 'center' }}>
+                    {tag.name}
+                  </span>
+                  {tag.description && (
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)', flex: 1 }}>{tag.description}</span>
+                  )}
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                    <button className="btn btn-ghost" style={{ fontSize: 11, padding: '3px 8px' }}
+                      onClick={() => { setEditingId(tag.id); setEditName(tag.name); setEditColor(tag.color); }}>
+                      Editar
+                    </button>
+                    <button className="btn btn-ghost" style={{ padding: '3px 8px' }}
+                      onClick={() => { if (confirm(`Deletar a tag "${tag.name}"?`)) deleteMutation.mutate(tag.id); }}>
+                      <X size={13} />
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Auto-reply tab ────────────────────────────────────────────────────────────
 
@@ -305,12 +452,13 @@ function ReportTab() {
 // ── Main Settings Page ────────────────────────────────────────────────────────
 
 export default function Settings() {
-  const [tab, setTab] = useState<'auto-reply' | 'quick-replies' | 'report'>('auto-reply');
+  const [tab, setTab] = useState<'tags' | 'auto-reply' | 'quick-replies' | 'report'>('tags');
 
   const tabs = [
-    { key: 'auto-reply', label: 'Resposta Automática', icon: <Clock size={15} /> },
-    { key: 'quick-replies', label: 'Respostas Rápidas', icon: <MessageSquare size={15} /> },
-    { key: 'report', label: 'Relatório Semanal', icon: <BarChart2 size={15} /> },
+    { key: 'tags',          label: 'Etiquetas',           icon: <Tag size={15} /> },
+    { key: 'auto-reply',    label: 'Resposta Automática', icon: <Clock size={15} /> },
+    { key: 'quick-replies', label: 'Respostas Rápidas',   icon: <MessageSquare size={15} /> },
+    { key: 'report',        label: 'Relatório Semanal',   icon: <BarChart2 size={15} /> },
   ];
 
   return (
@@ -334,6 +482,7 @@ export default function Settings() {
         ))}
       </div>
 
+      {tab === 'tags' && <TagsTab />}
       {tab === 'auto-reply' && <AutoReplyTab />}
       {tab === 'quick-replies' && <QuickRepliesTab />}
       {tab === 'report' && <ReportTab />}

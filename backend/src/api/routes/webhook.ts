@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { processIncomingMessage } from '../../services/messageService';
 import { MessageType } from '@prisma/client';
+import prisma from '../../prisma/client';
 import { log } from '../../utils/logger';
 
 const router = Router();
@@ -38,8 +39,74 @@ function extractMessageContent(msg: any): { content: string; type: MessageType }
     return { content: `[Documento: ${m.documentMessage.fileName || 'arquivo'}]`, type: 'TEXT' };
   if (m.stickerMessage)
     return { content: '[Sticker]', type: 'TEXT' };
+  // Voto de enquete — pollUpdateMessage ou pollVoteMessage
+  if (m.pollUpdateMessage) {
+    const vote = m.pollUpdateMessage;
+    // selectedOptions é array de strings com as opções votadas
+    const selected: string[] = vote?.vote?.selectedOptions || [];
+    if (selected.length > 0) {
+      return { content: `[Voto] ${selected[0]}`, type: 'TEXT' };
+    }
+    // Se selectedOptions está vazio = pessoa desmarcou o voto
+    return { content: '[Voto] [desmarcado]', type: 'TEXT' };
+  }
 
-  return null; // reações e outros ignorados
+  return null;
+}
+
+/**
+ * Processa voto de enquete de campanha.
+ * Se o lead tem tag "poll-pending:<tagName>", verifica se votou na opção positiva
+ * e aplica a tag configurada.
+ */
+async function processPollVote(phone: string, voteContent: string): Promise<void> {
+  // Busca o lead
+  const variants = [phone, `55${phone}`];
+  let lead = null;
+  for (const v of variants) {
+    lead = await prisma.lead.findUnique({ where: { phone: v } });
+    if (lead) break;
+  }
+  if (!lead) return;
+
+  // Verifica se tem enquete pendente
+  const pendingTag = lead.tags.find(t => t.startsWith('poll-pending:'));
+  if (!pendingTag) return;
+
+  const tagToApply = pendingTag.replace('poll-pending:', '');
+  const cleanedTags = lead.tags.filter(t => t !== pendingTag);
+
+  // Remove o prefixo "[Voto] " para comparar
+  const votedOption = voteContent.replace('[Voto] ', '').toLowerCase();
+
+  // Detecta se é voto positivo (não contém "não", "agora não", "no")
+  const isNegative = votedOption.includes('não') || votedOption.includes('nao') ||
+                     votedOption.includes('agora') || votedOption.includes('no,') ||
+                     votedOption === 'no';
+
+  if (!isNegative && tagToApply) {
+    // Voto positivo — aplica a tag e avança para WARMING
+    const newTags = [...new Set([...cleanedTags, tagToApply])];
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: {
+        tags: newTags,
+        stage: lead.stage === 'COLD' ? 'WARMING' : lead.stage,
+        updatedAt: new Date(),
+      },
+    });
+    log.ok(`🗳️  Voto SIM: ${lead.name || lead.phone} → tag "${tagToApply}" aplicada`);
+  } else {
+    // Voto negativo — remove o pending, adiciona opt-out
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: {
+        tags: [...cleanedTags, 'opt-out'],
+        updatedAt: new Date(),
+      },
+    });
+    log.lead(`🗳️  Voto NÃO: ${lead.name || lead.phone} → opt-out`);
+  }
 }
 
 // POST /webhook/evolution
@@ -74,6 +141,11 @@ router.post('/evolution', async (req: Request, res: Response) => {
     for (const msg of rawMessages) {
       if (msg?.key?.fromMe === true) continue; // mensagem enviada por nós
 
+      // Log de debug para pollUpdateMessage — ajuda a confirmar o formato real
+      if (msg?.message?.pollUpdateMessage) {
+        log.ok(`🗳️  POLL RAW: ${JSON.stringify(msg.message.pollUpdateMessage).slice(0, 300)}`);
+      }
+
       const rawJid = msg?.key?.remoteJid || msg?.remoteJid || '';
 
       // Ignora grupos e broadcasts
@@ -95,6 +167,15 @@ router.post('/evolution', async (req: Request, res: Response) => {
       if (!extracted) continue;
 
       log.webhook(`Evento "${event}" | chip ${instanceNumber} | de: ${phone}`);
+
+      // Voto de enquete — processa separadamente antes do fluxo normal
+      if (extracted.content.startsWith('[Voto] ')) {
+        log.ok(`🗳️  Voto recebido de ${phone}: "${extracted.content}"`);
+        await processPollVote(phone, extracted.content).catch(err =>
+          log.error('Erro ao processar voto de enquete', err)
+        );
+        // Ainda passa pelo processIncomingMessage para salvar no histórico
+      }
 
       await processIncomingMessage({
         phone,

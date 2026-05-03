@@ -19,6 +19,7 @@ export interface Lead {
   phone: string;
   email: string | null;
   source: string;
+  origin: string;
   stage: Stage;
   nameCollected: boolean;
   firstMessageSent: boolean;
@@ -49,7 +50,9 @@ export interface Campaign {
   name: string;
   targetStages: Stage[];
   targetSources: string[];
+  targetOrigins: string[];
   targetTags: string[];
+  targetTagsMatchAll: boolean;
   targetPreferredContact: string[];
   messageTemplate: string;
   scheduledAt: string | null;
@@ -90,6 +93,7 @@ export const leadsApi = {
   list: (params?: Record<string, unknown>) => api.get<LeadListResponse>('/leads', { params }),
   get: (id: string) => api.get<Lead>(`/leads/${id}`),
   stats: () => api.get<LeadStats>('/leads/stats'),
+  origins: () => api.get<string[]>('/leads/origins'),
   create: (data: Partial<Lead>) => api.post<Lead>('/leads', data),
   update: (id: string, data: Partial<Lead>) => api.patch<Lead>(`/leads/${id}`, data),
   updateName: (id: string, name: string) => api.patch<Lead>(`/leads/${id}/name`, { name }),
@@ -294,6 +298,23 @@ export const settingsApi = {
 export const campaignTestApi = {
   test: (id: string, testLeadIds: string[]) =>
     api.post(`/campaigns/${id}/test`, { testLeadIds }),
+};
+
+// ── Tags API ──────────────────────────────────────────────────────────────────
+
+export interface Tag {
+  id: string;
+  name: string;
+  color: string;
+  description: string;
+  createdAt: string;
+}
+
+export const tagsApi = {
+  list: () => api.get<Tag[]>('/tags'),
+  create: (data: { name: string; color?: string; description?: string }) => api.post<Tag>('/tags', data),
+  update: (id: string, data: Partial<Tag>) => api.patch<Tag>(`/tags/${id}`, data),
+  delete: (id: string) => api.delete(`/tags/${id}`),
 };
 
 // ── Import API ────────────────────────────────────────────────────────────────

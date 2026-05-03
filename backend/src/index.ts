@@ -31,27 +31,57 @@ async function runMigrations() {
   await sql(`INSERT INTO "AIConfig" ("id","updatedAt") VALUES ('default',NOW()) ON CONFLICT ("id") DO NOTHING`);
   await sql(`ALTER TABLE "AIConfig" ADD COLUMN IF NOT EXISTS "splitMessages" BOOLEAN NOT NULL DEFAULT true`);
   await sql(`ALTER TABLE "AIConfig" ADD COLUMN IF NOT EXISTS "blockDelaySeconds" INTEGER NOT NULL DEFAULT 3`);
+  // Anti-ban: limites e delays configuráveis
+  await sql(`ALTER TABLE "AIConfig" ADD COLUMN IF NOT EXISTS "dailyLimitPerChip" INTEGER NOT NULL DEFAULT 300`);
+  await sql(`ALTER TABLE "AIConfig" ADD COLUMN IF NOT EXISTS "minDelaySeconds" INTEGER NOT NULL DEFAULT 20`);
+  await sql(`ALTER TABLE "AIConfig" ADD COLUMN IF NOT EXISTS "maxDelaySeconds" INTEGER NOT NULL DEFAULT 60`);
 
   // CampaignLead
   await sql(`ALTER TABLE "CampaignLead" ADD COLUMN IF NOT EXISTS "generatedMessage" TEXT`);
   await sql(`ALTER TABLE "CampaignLead" ADD COLUMN IF NOT EXISTS "finalMessage" TEXT`);
   await sql(`CREATE INDEX IF NOT EXISTS "CampaignLead_status_idx" ON "CampaignLead"("status")`);
 
-  // Lead
+  // Lead — engagementScore para ordenação de campanhas
+  await sql(`ALTER TABLE "Lead" ADD COLUMN IF NOT EXISTS "engagementScore" INTEGER NOT NULL DEFAULT 0`);
+  await sql(`UPDATE "Lead" l SET "engagementScore" = (SELECT COUNT(*) FROM "Message" m WHERE m."leadId" = l.id AND m."direction" = 'RECEIVED') WHERE "engagementScore" = 0`);
   await sql(`ALTER TABLE "Lead" ADD COLUMN IF NOT EXISTS "unreadCount" INTEGER NOT NULL DEFAULT 0`);
   await sql(`ALTER TABLE "Lead" ADD COLUMN IF NOT EXISTS "lastMessageAt" TIMESTAMP(3)`);
   await sql(`UPDATE "Lead" l SET "lastMessageAt" = (SELECT MAX(m."sentAt") FROM "Message" m WHERE m."leadId" = l.id) WHERE "lastMessageAt" IS NULL AND EXISTS (SELECT 1 FROM "Message" m WHERE m."leadId" = l.id)`);
+  // Lead — origin (canal de aquisição)
+  await sql(`ALTER TABLE "Lead" ADD COLUMN IF NOT EXISTS "origin" TEXT NOT NULL DEFAULT 'Orgânico'`);
+  await sql(`CREATE INDEX IF NOT EXISTS "Lead_origin_idx" ON "Lead"("origin")`);
 
   // Campaign
   await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "mediaAttachments" JSONB[] NOT NULL DEFAULT '{}'`);
   await sql(`ALTER TABLE "Campaign" DROP COLUMN IF EXISTS "requiresApproval"`);
-
-  // Campaign send window
   await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "sendWindowStart" TEXT`);
   await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "sendWindowEnd" TEXT`);
   await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "sendWindowDays" INTEGER[] NOT NULL DEFAULT '{}'`);
   await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "targetTags" TEXT[] NOT NULL DEFAULT '{}'`);
   await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "targetPreferredContact" TEXT[] NOT NULL DEFAULT '{}'`);
+  await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "targetOrigins" TEXT[] NOT NULL DEFAULT '{}'`);
+  await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "targetTagsMatchAll" BOOLEAN NOT NULL DEFAULT false`);
+  // Editor visual de steps
+  await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "steps" JSONB[] NOT NULL DEFAULT '{}'`);
+  // Campaign steps (editor visual)
+  await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "steps" JSONB[] NOT NULL DEFAULT '{}'`);
+  await sql(`ALTER TABLE "Campaign" ALTER COLUMN "messageTemplate" SET DEFAULT ''`);
+  await sql(`UPDATE "Campaign" SET "messageTemplate" = '' WHERE "messageTemplate" IS NULL`);
+  await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "pollQuestion" TEXT NOT NULL DEFAULT ''`);
+  await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "pollOptionYes" TEXT NOT NULL DEFAULT 'Sim, quero acessar'`);
+  await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "pollOptionNo" TEXT NOT NULL DEFAULT 'Agora não'`);
+  await sql(`ALTER TABLE "Campaign" ADD COLUMN IF NOT EXISTS "pollTagOnYes" TEXT NOT NULL DEFAULT ''`);
+
+  // Tag — etiquetas universais gerenciáveis
+  await sql(`CREATE TABLE IF NOT EXISTS "Tag" (
+    "id"          TEXT NOT NULL,
+    "name"        TEXT NOT NULL,
+    "color"       TEXT NOT NULL DEFAULT '#6366f1',
+    "description" TEXT NOT NULL DEFAULT '',
+    "createdAt"   TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "Tag_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "Tag_name_key" UNIQUE ("name")
+  )`);
 
   // LeadList
   await sql(`CREATE TABLE IF NOT EXISTS "LeadList" (

@@ -1,10 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Save, Play, Plus, X, RefreshCw } from 'lucide-react';
-import { aiConfigApi, type AIConfig } from '../api/client';
-
-import { useQuery } from '@tanstack/react-query';
-import { leadsApi, importApi, type LeadStats } from '../api/client';
+import { aiConfigApi, leadsApi, importApi, type AIConfig, type LeadStats } from '../api/client';
 import { SOURCES } from '../constants';
 
 const STAGE_OPTIONS = ['COLD', 'WARMING', 'WARM', 'HOT', 'INTERESTED'];
@@ -341,17 +338,18 @@ export default function AISettings() {
 
       {/* Preview / Teste */}
       <div className="card" style={{ marginTop: 20 }}>
-        <h3 style={{ fontWeight: 600, marginBottom: 4 }}>🧪 Testar Geração de Mensagem</h3>
+        <h3 style={{ fontWeight: 600, marginBottom: 4 }}>🧪 Testar Personalização de Mensagem</h3>
         <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 16 }}>
-          Salve as configurações acima e teste como a IA vai gerar mensagens com as regras definidas.
+          Escreva a mensagem como você quer que chegue. A IA vai personalizar o nome e dividir em blocos.
         </p>
 
         <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
           <div className="form-group" style={{ marginBottom: 0 }}>
-            <label className="form-label">Template / instrução da campanha</label>
+            <label className="form-label">Sua mensagem</label>
             <textarea
               className="form-textarea"
               style={{ minHeight: 70 }}
+              placeholder={"Oi! Estou montando uma lista VIP com oportunidades no litoral. Posso te incluir?"}
               value={previewTemplate}
               onChange={(e) => setPreviewTemplate(e.target.value)}
             />

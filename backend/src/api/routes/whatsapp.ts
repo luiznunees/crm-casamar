@@ -1,5 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { getAllInstancesStatus, getQRCode, restartInstance } from '../../whatsapp/evolutionApi';
+import { sendOptInComparison } from '../../services/warmingFlowService';
+import prisma from '../../prisma/client';
 import { log } from '../../utils/logger';
 
 const router = Router();
@@ -36,6 +38,25 @@ router.post('/restart/:chip', async (req: Request, res: Response) => {
     res.json({ ok });
   } catch (err) {
     res.status(500).json({ error: 'Erro ao reiniciar chip' });
+  }
+});
+
+// POST /whatsapp/test-optin/:phone — envia os 3 formatos de opt-in para comparação
+router.post('/test-optin/:phone', async (req: Request, res: Response) => {
+  try {
+    const { phone } = req.params;
+    const lead = await prisma.lead.findFirst({
+      where: { phone: { contains: phone.replace(/\D/g, '') } },
+    });
+    if (!lead) return res.status(404).json({ error: `Lead com telefone ${phone} não encontrado` });
+
+    log.ok(`Enviando 3 formatos de opt-in para ${lead.phone}`);
+    // Roda em background para não travar o response
+    sendOptInComparison(lead).catch((err) => log.error('Erro no test-optin', err));
+
+    res.json({ ok: true, message: `Enviando 3 formatos para ${lead.phone} (chip ${lead.assignedNumber})` });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao enviar teste' });
   }
 });
 

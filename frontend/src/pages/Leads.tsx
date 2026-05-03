@@ -1,9 +1,9 @@
 import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search, Trash2, ChevronRight, ChevronDown, Folder, FolderOpen, Users } from 'lucide-react';
-import { leadsApi, type Lead, type Stage, type LeadStats } from '../api/client';
-import { STAGE_LABELS, STAGE_COLORS } from '../constants';
+import { Plus, Search, Trash2, ChevronRight, Folder, FolderOpen, Users } from 'lucide-react';
+import { leadsApi, tagsApi, type Lead, type Stage, type LeadStats, type Tag } from '../api/client';
+import { STAGE_LABELS, STAGE_COLORS, DEFAULT_ORIGINS } from '../constants';
 import { StageBadge } from '../components/StageBadge';
 import { LeadRowSkeleton } from '../components/Skeleton';
 import { useDebounce } from '../hooks/useDebounce';
@@ -14,9 +14,11 @@ function CreateLeadModal({ onClose, defaultSource }: { onClose: () => void; defa
   const qc = useQueryClient();
   const [form, setForm] = useState({
     name: '', phone: '', email: '', source: defaultSource || '',
+    origin: 'Orgânico',
     stage: 'COLD' as Stage, assignedNumber: 1 as 1 | 2,
-    preferredContact: 'WHATSAPP' as const, observations: '', tags: '',
+    preferredContact: 'WHATSAPP' as const, observations: '', tags: [] as string[],
   });
+  const [customOrigin, setCustomOrigin] = useState('');
   const [error, setError] = useState('');
 
   const { data: stats } = useQuery({
@@ -25,11 +27,21 @@ function CreateLeadModal({ onClose, defaultSource }: { onClose: () => void; defa
     staleTime: 30_000,
   });
 
-  // Todas as sources existentes + padrões
+  const { data: allTags = [] } = useQuery({
+    queryKey: ['tags'],
+    queryFn: () => tagsApi.list().then(r => r.data),
+    staleTime: 60_000,
+  });
+
   const allSources = Array.from(new Set([
     ...Object.keys((stats as LeadStats | undefined)?.bySource || {}),
     'Iniciada', 'Malibu', 'Amari', 'Outro',
   ])).sort();
+
+  const originOptions = [...DEFAULT_ORIGINS, ...(customOrigin && !DEFAULT_ORIGINS.includes(customOrigin) ? [customOrigin] : [])];
+
+  const toggleTag = (tag: string) =>
+    setForm(f => ({ ...f, tags: f.tags.includes(tag) ? f.tags.filter(t => t !== tag) : [...f.tags, tag] }));
 
   const mutation = useMutation({
     mutationFn: () => leadsApi.create({
@@ -37,8 +49,7 @@ function CreateLeadModal({ onClose, defaultSource }: { onClose: () => void; defa
       name: form.name || undefined,
       email: form.email || undefined,
       observations: form.observations || undefined,
-      tags: form.tags ? form.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
-    }),
+    } as any),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['leads'] });
       qc.invalidateQueries({ queryKey: ['lead-stats'] });
@@ -51,7 +62,7 @@ function CreateLeadModal({ onClose, defaultSource }: { onClose: () => void; defa
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
+      <div className="modal" style={{ maxWidth: 560 }} onClick={e => e.stopPropagation()}>
         <h2 className="modal-title">Novo Lead</h2>
         <div className="form-group">
           <label className="form-label">Telefone *</label>
@@ -61,17 +72,24 @@ function CreateLeadModal({ onClose, defaultSource }: { onClose: () => void; defa
           <label className="form-label">Nome (opcional)</label>
           <input className="form-input" placeholder="Nome do lead" value={form.name} onChange={e => set('name', e.target.value)} />
         </div>
-        <div className="form-group">
-          <label className="form-label">Email</label>
-          <input className="form-input" type="email" placeholder="email@exemplo.com" value={form.email} onChange={e => set('email', e.target.value)} />
-        </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div className="form-group">
-            <label className="form-label">Lista / Empreendimento *</label>
+            <label className="form-label">Empreendimento *</label>
             <select className="form-select" value={form.source} onChange={e => set('source', e.target.value)}>
               <option value="">Selecione...</option>
               {allSources.map(s => <option key={s}>{s}</option>)}
             </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Origem *</label>
+            <select className="form-select" value={form.origin} onChange={e => set('origin', e.target.value)}>
+              {originOptions.map(o => <option key={o}>{o}</option>)}
+              <option value="__custom__">+ Outra origem...</option>
+            </select>
+            {form.origin === '__custom__' && (
+              <input className="form-input" style={{ marginTop: 6 }} placeholder="Ex: Indicação, Evento..."
+                value={customOrigin} onChange={e => { setCustomOrigin(e.target.value); set('origin', e.target.value); }} />
+            )}
           </div>
           <div className="form-group">
             <label className="form-label">Stage</label>
@@ -86,22 +104,31 @@ function CreateLeadModal({ onClose, defaultSource }: { onClose: () => void; defa
               <option value={2}>Chip 2</option>
             </select>
           </div>
-          <div className="form-group">
-            <label className="form-label">Contato Preferido</label>
-            <select className="form-select" value={form.preferredContact} onChange={e => set('preferredContact', e.target.value)}>
-              <option value="WHATSAPP">WhatsApp</option>
-              <option value="AUDIO">Áudio</option>
-              <option value="CALL">Ligação</option>
-            </select>
-          </div>
         </div>
+
+        {/* Tags */}
+        {(allTags as Tag[]).length > 0 && (
+          <div className="form-group">
+            <label className="form-label">Etiquetas</label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {(allTags as Tag[]).map(tag => (
+                <button key={tag.id} type="button" onClick={() => toggleTag(tag.name)}
+                  style={{
+                    padding: '3px 10px', borderRadius: 6, fontSize: 12, cursor: 'pointer', fontWeight: 600,
+                    background: form.tags.includes(tag.name) ? `${tag.color}33` : 'transparent',
+                    color: form.tags.includes(tag.name) ? tag.color : 'var(--text-muted)',
+                    border: `1px solid ${form.tags.includes(tag.name) ? tag.color : 'var(--border)'}`,
+                  }}>
+                  {tag.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="form-group">
           <label className="form-label">Observações</label>
           <textarea className="form-textarea" placeholder="Notas sobre o lead..." value={form.observations} onChange={e => set('observations', e.target.value)} />
-        </div>
-        <div className="form-group">
-          <label className="form-label">Tags (separadas por vírgula)</label>
-          <input className="form-input" placeholder="vip, urgente, retorno" value={form.tags} onChange={e => set('tags', e.target.value)} />
         </div>
         {error && <div style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 12 }}>{error}</div>}
         <div className="modal-actions">
@@ -258,6 +285,7 @@ function LeadList({ source, onBack }: { source: string; onBack: () => void }) {
               <th>Nome / Telefone</th>
               <th>Stage</th>
               <th>Chip</th>
+              <th>Origem</th>
               <th>Msgs</th>
               <th>Criado em</th>
               <th></th>
@@ -283,6 +311,7 @@ function LeadList({ source, onBack }: { source: string; onBack: () => void }) {
                       chip {lead.assignedNumber}
                     </span>
                   </td>
+                  <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{lead.origin || '—'}</td>
                   <td>{lead._count?.messages ?? 0}</td>
                   <td style={{ color: 'var(--text-muted)', fontSize: 12 }}>{new Date(lead.createdAt).toLocaleDateString('pt-BR')}</td>
                   <td onClick={e => e.stopPropagation()}>

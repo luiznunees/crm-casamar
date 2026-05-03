@@ -1,7 +1,8 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { redisConnection } from './redis';
 import prisma from '../prisma/client';
-import { sendCampaignMessageToLead, sendNameRequestMessage } from '../services/messageService';
+import { sendCampaignMessageToLead, executeCampaignSteps, type CampaignPoll } from '../services/messageService';
+import { executeSteps, type CampaignStep } from '../services/stepsExecutor';
 import { enqueueCampaign, updateCampaignStatus } from '../services/campaignService';
 import { log } from '../utils/logger';
 
@@ -35,8 +36,25 @@ export function startCampaignWorker() {
         const campaign = await prisma.campaign.findUnique({ where: { id: campaignId } });
         if (!campaign) throw new Error(`Campanha ${campaignId} não encontrada`);
 
-        const mediaAttachments = (campaign as any).mediaAttachments || [];
-        const result = await sendCampaignMessageToLead(leadId, campaign.messageTemplate, mediaAttachments);
+        let result: { success: boolean; skipped?: boolean; reason?: string };
+
+        // Novo fluxo: steps do editor visual
+        const steps = (campaign as any).steps as CampaignStep[] | undefined;
+        if (steps && steps.length > 0) {
+          result = await executeSteps(leadId, steps);
+        } else {
+          // Fluxo legado: messageTemplate + mediaAttachments
+          const mediaAttachments = (campaign as any).mediaAttachments || [];
+          const poll: CampaignPoll | undefined = (campaign as any).pollEnabled
+            ? {
+                question: (campaign as any).pollQuestion || '',
+                optionYes: (campaign as any).pollOptionYes || 'Sim, quero acessar',
+                optionNo: (campaign as any).pollOptionNo || 'Agora não',
+                tagOnYes: (campaign as any).pollTagOnYes || '',
+              }
+            : undefined;
+          result = await sendCampaignMessageToLead(leadId, campaign.messageTemplate, mediaAttachments, poll);
+        }
 
         await prisma.campaignLead.update({
           where: { campaignId_leadId: { campaignId, leadId } },
@@ -59,14 +77,14 @@ export function startCampaignWorker() {
       }
 
       if (name === 'send-name-request') {
-        const { leadId } = data as { leadId: string };
-        await sendNameRequestMessage(leadId);
+        // Job legado — ignorado. Coleta de nome agora é passiva.
+        log.skip(`Job send-name-request ignorado (fluxo removido)`);
         return { success: true };
       }
 
       throw new Error(`Job desconhecido: ${name}`);
     },
-    { connection: redisConnection, concurrency: 3 }
+    { connection: redisConnection, concurrency: 1 }
   );
 
   worker.on('completed', (job) =>
